@@ -1,7 +1,7 @@
 import Lake
 open Lake DSL
 
-package «blanc» where
+package «elevm» where
   leanOptions := #[
     ⟨`pp.unicode.fun, true⟩ -- pretty-prints `fun a ↦ b`
   ]
