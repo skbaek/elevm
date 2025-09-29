@@ -952,19 +952,33 @@ def Adr.toB256 (a : Adr) : B256 :=
 inductive Ninst : Type
   | reg : Rinst → Ninst
   | exec : Xinst → Ninst
-  | push : B256 → Nat → Ninst
+  | push : ∀ bs : B8L, bs.length ≤ 32 → Ninst
+
+-- inductive Ninst : Type
+--   | reg : Rinst → Ninst
+--   | exec : Xinst → Ninst
+--   | push : B256 → Nat → Ninst
 
 def Ninst.toOpString : Ninst → String
   | reg o => Rinst.toString o
   | exec o => Xinst.toString o
-  | push _ 0 => "PUSH0"
-  | push _ len => "PUSH" ++ len.repr
+  -- | push bs _ => "PUSH0"
+  | push bs _ => "PUSH" ++ bs.length.repr
+
+-- def Ninst.toString : Ninst → String
+--   | reg o => Rinst.toString o
+--   | exec o => Xinst.toString o
+--   | push _ 0 => "PUSH0"
+--   | push x len => "PUSH" ++ len.repr ++ " 0x" ++ x.toHex.dropZeroes
 
 def Ninst.toString : Ninst → String
   | reg o => Rinst.toString o
   | exec o => Xinst.toString o
-  | push _ 0 => "PUSH0"
-  | push x len => "PUSH" ++ len.repr ++ " 0x" ++ x.toHex.dropZeroes
+  | push [] _ => "PUSH0"
+  | push bs _ => "PUSH" ++ bs.length.repr ++ " " ++ B8L.toHex bs
+
+instance : ToString Ninst := ⟨Ninst.toString⟩
+instance : Repr Ninst := ⟨λ i _ => i.toString⟩
 
 inductive Inst : Type
   | last : Linst → Inst
@@ -972,10 +986,6 @@ inductive Inst : Type
   | jump : Jinst → Inst
 
 def Evm.getInst (evm : Evm) : Option Inst :=
-  let aux (code : ByteArray) (pc len off : Nat) : B8 :=
-    if off < len
-    then code.get! ((pc + len) - off)
-    else 0
   if evm.pc < evm.code.size
   then
     let b : B8 := evm.code.get! evm.pc
@@ -985,47 +995,72 @@ def Evm.getInst (evm : Evm) : Option Inst :=
     (b.toLinst <&> .last) <|>
     (
       let bn := b.toNat
-      if 95 ≤ bn ∧ bn ≤ 127
-      then let len := bn - 95
-           let x : B256 :=
-             B8s.toB256
-               (aux evm.code evm.pc len 31)
-               (aux evm.code evm.pc len 30)
-               (aux evm.code evm.pc len 29)
-               (aux evm.code evm.pc len 28)
-               (aux evm.code evm.pc len 27)
-               (aux evm.code evm.pc len 26)
-               (aux evm.code evm.pc len 25)
-               (aux evm.code evm.pc len 24)
-               (aux evm.code evm.pc len 23)
-               (aux evm.code evm.pc len 22)
-               (aux evm.code evm.pc len 21)
-               (aux evm.code evm.pc len 20)
-               (aux evm.code evm.pc len 19)
-               (aux evm.code evm.pc len 18)
-               (aux evm.code evm.pc len 17)
-               (aux evm.code evm.pc len 16)
-               (aux evm.code evm.pc len 15)
-               (aux evm.code evm.pc len 14)
-               (aux evm.code evm.pc len 13)
-               (aux evm.code evm.pc len 12)
-               (aux evm.code evm.pc len 11)
-               (aux evm.code evm.pc len 10)
-               (aux evm.code evm.pc len  9)
-               (aux evm.code evm.pc len  8)
-               (aux evm.code evm.pc len  7)
-               (aux evm.code evm.pc len  6)
-               (aux evm.code evm.pc len  5)
-               (aux evm.code evm.pc len  4)
-               (aux evm.code evm.pc len  3)
-               (aux evm.code evm.pc len  2)
-               (aux evm.code evm.pc len  1)
-               (aux evm.code evm.pc len  0)
-           some (.next <| .push x len)
-      else none
+      if h_bn : 95 ≤ bn ∧ bn ≤ 127 then
+        let bs : B8L := evm.code.sliceD (evm.pc + 1) (bn - 95) 0
+        let h_bs : bs.length ≤ 32 := by
+          simp [bs, ByteArray.length_sliceD, h_bn.right]
+        some <| .next <| .push bs h_bs
+      else
+        none
     )
   else
     some (.last .stop)
+
+-- def Evm.getInst (evm : Evm) : Option Inst :=
+--   let aux (code : ByteArray) (pc len off : Nat) : B8 :=
+--     if off < len
+--     then code.get! ((pc + len) - off)
+--     else 0
+--   if evm.pc < evm.code.size
+--   then
+--     let b : B8 := evm.code.get! evm.pc
+--     (b.toRinst <&> (.next ∘ .reg)) <|>
+--     (b.toXinst <&> (.next ∘ .exec)) <|>
+--     (b.toJinst <&> .jump) <|>
+--     (b.toLinst <&> .last) <|>
+--     (
+--       let bn := b.toNat
+--       if 95 ≤ bn ∧ bn ≤ 127
+--       then let len := bn - 95
+--            let x : B256 :=
+--              B8s.toB256
+--                (aux evm.code evm.pc len 31)
+--                (aux evm.code evm.pc len 30)
+--                (aux evm.code evm.pc len 29)
+--                (aux evm.code evm.pc len 28)
+--                (aux evm.code evm.pc len 27)
+--                (aux evm.code evm.pc len 26)
+--                (aux evm.code evm.pc len 25)
+--                (aux evm.code evm.pc len 24)
+--                (aux evm.code evm.pc len 23)
+--                (aux evm.code evm.pc len 22)
+--                (aux evm.code evm.pc len 21)
+--                (aux evm.code evm.pc len 20)
+--                (aux evm.code evm.pc len 19)
+--                (aux evm.code evm.pc len 18)
+--                (aux evm.code evm.pc len 17)
+--                (aux evm.code evm.pc len 16)
+--                (aux evm.code evm.pc len 15)
+--                (aux evm.code evm.pc len 14)
+--                (aux evm.code evm.pc len 13)
+--                (aux evm.code evm.pc len 12)
+--                (aux evm.code evm.pc len 11)
+--                (aux evm.code evm.pc len 10)
+--                (aux evm.code evm.pc len  9)
+--                (aux evm.code evm.pc len  8)
+--                (aux evm.code evm.pc len  7)
+--                (aux evm.code evm.pc len  6)
+--                (aux evm.code evm.pc len  5)
+--                (aux evm.code evm.pc len  4)
+--                (aux evm.code evm.pc len  3)
+--                (aux evm.code evm.pc len  2)
+--                (aux evm.code evm.pc len  1)
+--                (aux evm.code evm.pc len  0)
+--            some (.next <| .push x len)
+--       else none
+--     )
+--   else
+--     some (.last .stop)
 
 def fakeExpAux (num den i : Nat) : Nat → Nat → Nat
   | _, 0 => panic! "error : recursion limit reached for fake exponentiation"
@@ -2688,10 +2723,14 @@ mutual
   termination_by lim => lim
 
   def Ninst.run (vb : Bool) (evm : Evm) : Ninst → Nat → Execution
-    | .push x len, _ => do
-      let evm ← chargeGas (if len = 0 then gBase else gVerylow) evm
-      let evm ← evm.push x
-      .ok {evm with pc := evm.pc + len + 1}
+    | .push xs _, _ => do
+      let evm ← chargeGas (if xs.length = 0 then gBase else gVerylow) evm
+      let evm ← evm.push xs.toB256P
+      .ok {evm with pc := evm.pc + xs.length + 1}
+    --| .push x len, _ => do
+    --  let evm ← chargeGas (if len = 0 then gBase else gVerylow) evm
+    --  let evm ← evm.push x
+    --  .ok {evm with pc := evm.pc + len + 1}
     | .reg r, _ => r.run evm
     | .exec _, 0 => .error ⟨evm, "RecursionLimit"⟩
     | .exec .create, lim + 1 => do

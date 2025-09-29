@@ -790,6 +790,14 @@ def ByteArray.sliceD (xs : ByteArray) : Nat → Nat → B8 → B8L
     then xs.get! m :: ByteArray.sliceD xs (m + 1) n d
     else List.replicate (n + 1) d
 
+lemma ByteArray.length_sliceD (xs : ByteArray) (m n : Nat) (d : B8) :
+    (ByteArray.sliceD xs m n d).length = n := by
+  induction n generalizing m with
+  | zero => rfl
+  | succ n ih =>
+    simp [ByteArray.sliceD]
+    by_cases h : m < xs.size <;> simp [h, ih]
+
 def Array.sliceD {ξ : Type u} (xs : Array ξ) : Nat → Nat → ξ → List ξ :=
   let rec aux (xs : Array ξ) : List ξ → Nat → Nat → ξ → List ξ
     | Acc, _, 0, _ => Acc
