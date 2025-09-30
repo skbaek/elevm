@@ -293,14 +293,6 @@ def Nat.toBool : Nat → Bool
   | 0 => 0
   | _ => 1
 
--- abbrev Vec := Vector
---
--- def B64.toB8V (x : B64) : Vec B8 8 :=
---   ⟨ #[ (x >>> 56).toUInt8, (x >>> 48).toUInt8,
---        (x >>> 40).toUInt8, (x >>> 32).toUInt8,
---        (x >>> 24).toUInt8, (x >>> 16).toUInt8,
---        (x >>> 8).toUInt8, x.toUInt8 ], rfl ⟩
-
 def B64.toB8L (x : B64) : B8L :=
   [ (x >>> 56).toUInt8, (x >>> 48).toUInt8,
     (x >>> 40).toUInt8, (x >>> 32).toUInt8,
@@ -745,8 +737,7 @@ def Hex.toB256? (hx : String) : Option B256 := do
 
 def B8L.toB64 (xs : B8L) : B64 :=
   let v := xs.pack 8
-  let h : v.length = 8 := List.length_ekatD _ _ _
-  B8s.toB64 v[0] v[1] v[2] v[3] v[4] v[5] v[6] v[7]
+  B8s.toB64 v[0]! v[1]! v[2]! v[3]! v[4]! v[5]! v[6]! v[7]!
 
 def B8L.toB128 (xs : B8L) : B128 :=
   let xs' := xs.pack 16

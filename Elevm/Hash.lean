@@ -302,41 +302,6 @@ def θ {ξ : Type u} [XorOp ξ] [Inhabited ξ]
       outer bc i <| inner t i 5 ws
   outer initVec 5 ws
 
--- def keccak_rdnc_00 : Bits 64 := Hex.toBits! 16 "0000000000000001"
--- def keccak_rdnc_01 : Bits 64 := Hex.toBits! 16 "0000000000008082"
--- def keccak_rdnc_02 : Bits 64 := Hex.toBits! 16 "800000000000808a"
--- def keccak_rdnc_03 : Bits 64 := Hex.toBits! 16 "8000000080008000"
--- def keccak_rdnc_04 : Bits 64 := Hex.toBits! 16 "000000000000808b"
--- def keccak_rdnc_05 : Bits 64 := Hex.toBits! 16 "0000000080000001"
--- def keccak_rdnc_06 : Bits 64 := Hex.toBits! 16 "8000000080008081"
--- def keccak_rdnc_07 : Bits 64 := Hex.toBits! 16 "8000000000008009"
--- def keccak_rdnc_08 : Bits 64 := Hex.toBits! 16 "000000000000008a"
--- def keccak_rdnc_09 : Bits 64 := Hex.toBits! 16 "0000000000000088"
--- def keccak_rdnc_10 : Bits 64 := Hex.toBits! 16 "0000000080008009"
--- def keccak_rdnc_11 : Bits 64 := Hex.toBits! 16 "000000008000000a"
--- def keccak_rdnc_12 : Bits 64 := Hex.toBits! 16 "000000008000808b"
--- def keccak_rdnc_13 : Bits 64 := Hex.toBits! 16 "800000000000008b"
--- def keccak_rdnc_14 : Bits 64 := Hex.toBits! 16 "8000000000008089"
--- def keccak_rdnc_15 : Bits 64 := Hex.toBits! 16 "8000000000008003"
--- def keccak_rdnc_16 : Bits 64 := Hex.toBits! 16 "8000000000008002"
--- def keccak_rdnc_17 : Bits 64 := Hex.toBits! 16 "8000000000000080"
--- def keccak_rdnc_18 : Bits 64 := Hex.toBits! 16 "000000000000800a"
--- def keccak_rdnc_19 : Bits 64 := Hex.toBits! 16 "800000008000000a"
--- def keccak_rdnc_20 : Bits 64 := Hex.toBits! 16 "8000000080008081"
--- def keccak_rdnc_21 : Bits 64 := Hex.toBits! 16 "8000000000008080"
--- def keccak_rdnc_22 : Bits 64 := Hex.toBits! 16 "0000000080000001"
--- def keccak_rdnc_23 : Bits 64 := Hex.toBits! 16 "8000000080008008"
---
--- def Bits.rdnc : Array (Bits 64) :=
---   #[
---     keccak_rdnc_00, keccak_rdnc_01, keccak_rdnc_02, keccak_rdnc_03,
---     keccak_rdnc_04, keccak_rdnc_05, keccak_rdnc_06, keccak_rdnc_07,
---     keccak_rdnc_08, keccak_rdnc_09, keccak_rdnc_10, keccak_rdnc_11,
---     keccak_rdnc_12, keccak_rdnc_13, keccak_rdnc_14, keccak_rdnc_15,
---     keccak_rdnc_16, keccak_rdnc_17, keccak_rdnc_18, keccak_rdnc_19,
---     keccak_rdnc_20, keccak_rdnc_21, keccak_rdnc_22, keccak_rdnc_23
---   ]
-
 def B64.rdnc : Array B64 :=
   #[ 0x0000000000000001, 0x0000000000008082, 0x800000000000808a, 0x8000000080008000,
      0x000000000000808b, 0x0000000080000001, 0x8000000080008081, 0x8000000000008009,
@@ -393,22 +358,6 @@ def f {ξ : Type u} [XorOp ξ] [Complement ξ] [HAnd ξ ξ ξ] [Inhabited ξ]
     | n + 1, ws =>
       aux n <| ι (23 - n) rdnc <| χ <| ρπ rol <| θ rol ws
   aux 24 ws
-
--- def Bytes.run : Fin 17 → Bytes → Array (Bits 64) → Word
---   | wc, b0 :: b1 :: b2 :: b3 :: b4 :: b5 :: b6 :: b7 :: bs, ws =>
---     let t : Bits 64 := Bytes.toBits 8 [b7, b6, b5, b4, b3, b2, b1, b0]
---     let ws' := Array.app wc (· ^^^ t) ws
---     Bytes.run (wc + 1) bs <| if wc = 16 then (f Bits.rdnc ws' Bits.rol) else ws'
---   | wc, bs, ws =>
---     let rev (w : Bits 64) : Bits 64 :=
---       Bytes.toBits 8 (@Bits.toBytes 8 w).reverse
---     let t : Bits 64 := Bytes.toBits' 8 ((bs ++ [Bits.one 8]).takeD 8 (.zero 8)).reverse
---     let s := (Hex.toBits 16 "8000000000000000").getD 0
---     let temp0 := Array.app wc (· ^^^ t) ws
---     let temp1 := Array.app 16 (· ^^^ s) temp0
---     let ws' := f Bits.rdnc temp1 Bits.rol
---     (rev <| ws'[0]!) ++ (rev <| ws'[1]!) ++
---     (rev <| ws'[2]!) ++ (rev <| ws'[3]!)
 
 def B8L.run : Fin 17 → B8L → Array B64 → B256
   | wc, b0 :: b1 :: b2 :: b3 :: b4 :: b5 :: b6 :: b7 :: bs, ws =>
