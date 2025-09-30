@@ -747,25 +747,42 @@ def Hex.toB64? (hx : String) : Option B64 := do
 def Hex.toB256? (hx : String) : Option B256 := do
   Hex.toB8L hx >>= B8L.toB256?
 
-def B8V.toB64 (v : Vec B8 8) : B64 :=
-  B8s.toB64 v[0] v[1] v[2] v[3] v[4] v[5] v[6] v[7]
-
-def B8V.toB128 (v : Vec B8 16) : B128 :=
-    ⟨ B8s.toB64 v[0x0] v[0x1] v[0x2] v[0x3] v[0x4] v[0x5] v[0x6] v[0x7],
-      B8s.toB64 v[0x8] v[0x9] v[0xA] v[0xB] v[0xC] v[0xD] v[0xE] v[0xF] ⟩
-
-def B8V.toB256 (xs : Vec B8 32) : B256 :=
-  let h : Vec B8 16 := xs.take 16
-  let l : Vec B8 16 := xs.drop 16
-  ⟨B8V.toB128 h, B8V.toB128 l⟩
+-- def B8V.toB64 (v : Vec B8 8) : B64 :=
+--   B8s.toB64 v[0] v[1] v[2] v[3] v[4] v[5] v[6] v[7]
+--
+-- def B8V.toB128 (v : Vec B8 16) : B128 :=
+--     ⟨ B8s.toB64 v[0x0] v[0x1] v[0x2] v[0x3] v[0x4] v[0x5] v[0x6] v[0x7],
+--       B8s.toB64 v[0x8] v[0x9] v[0xA] v[0xB] v[0xC] v[0xD] v[0xE] v[0xF] ⟩
+--
+-- def B8V.toB256 (xs : Vec B8 32) : B256 :=
+--   let h : Vec B8 16 := xs.take 16
+--   let l : Vec B8 16 := xs.drop 16
+--   ⟨B8V.toB128 h, B8V.toB128 l⟩
 
 def B8L.pack (xs : B8L) (n : Nat) : B8L := List.ekatD n xs 0
 
-def B8L.toB8V (xs : B8L) (n : Nat) : Vec B8 n :=
-  ⟨⟨xs.pack n⟩, List.length_ekatD _ _ _⟩
+-- def B8L.toB8V (xs : B8L) (n : Nat) : Vec B8 n :=
+--   ⟨⟨xs.pack n⟩, List.length_ekatD _ _ _⟩
 
-def B8L.toB256P (xs : B8L) : B256 := B8V.toB256 (xs.toB8V 32)
-def B8L.toB64P (xs : B8L) : B64 := B8V.toB64 (xs.toB8V 8)
+def B8L.toB64 (xs : B8L) : B64 :=
+  let v := xs.pack 8
+  let h : v.length = 8 := List.length_ekatD _ _ _
+  B8s.toB64 v[0] v[1] v[2] v[3] v[4] v[5] v[6] v[7]
+
+def B8L.toB128 (xs : B8L) : B128 :=
+  let xs' := xs.pack 16
+  let xh := xs'.take 8
+  let xl := xs'.drop 8
+  ⟨B8L.toB64 xh, B8L.toB64 xl⟩
+
+def B8L.toB256 (xs : B8L) : B256 :=
+  let xs' := xs.pack 32
+  let xh := xs'.take 16
+  let xl := xs'.drop 16
+  ⟨B8L.toB128 xh, B8L.toB128 xl⟩
+
+-- def B8L.toB256P (xs : B8L) : B256 := B8V.toB256 (xs.toB8V 32)
+-- def B8L.toB64P (xs : B8L) : B64 := B8V.toB64 (xs.toB8V 8)
 
 def IO.guard (φ : Prop) [Decidable φ] (msg : String) : IO Unit :=
   if φ then return () else IO.throw msg

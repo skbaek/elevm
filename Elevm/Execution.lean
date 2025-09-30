@@ -418,7 +418,7 @@ def TxType.blobHashes : TxType → List B256
 def Tx.blobHashes (tx : Tx) : List B256 := tx.type.blobHashes
 
 def BLT.toB256 : BLT → Option B256
-  | .b8s bs => some bs.toB256P
+  | .b8s bs => some bs.toB256
   | _ => none
 
 -- nibbles-to-bytes maps
@@ -1366,7 +1366,7 @@ def Rinst.run (evm : Evm) : Rinst → Execution
   | .calldataload => do
     let ⟨start_index, evm⟩ ← evm.pop
     let evm ← chargeGas gVerylow evm
-    let value := B8L.toB256P <| evm.msg.data.sliceD start_index.toNat 32 0
+    let value := B8L.toB256 <| evm.msg.data.sliceD start_index.toNat 32 0
     evm.push value >>= Evm.incrPc
   | .calldatasize => pushItem evm.msg.data.length.toB256 gBase evm
   | .calldatacopy => do
@@ -1474,7 +1474,7 @@ def Rinst.run (evm : Evm) : Rinst → Execution
     let extend_memory_cost := evm.extCost [⟨start_index, 32⟩]
     let evm ← chargeGas (gVerylow + extend_memory_cost) evm
     let ⟨value, evm⟩  := evm.memRead start_index 32
-    evm.push (B8L.toB256P value) >>= Evm.incrPc
+    evm.push (B8L.toB256 value) >>= Evm.incrPc
   | .mstore => do
     let start_index ← evm.stackTop <&> B256.toNat
     let mut evm ← evm.pop'
@@ -1977,15 +1977,15 @@ def liftToExecution (evm : Evm)
 def executeEcrecover (evm : Evm) : Execution := do
   let data := evm.msg.data
   let evm ← chargeGas gasEcrecover evm
-  let h := B8L.toB256P <| data.sliceD 0 32 (0x00 : B8)
+  let h := B8L.toB256 <| data.sliceD 0 32 (0x00 : B8)
   let (some v : Option Bool) ←
     .ok
-      ( match (B8L.toB256P <| data.sliceD 32 32 (0x00 : B8)) with
+      ( match (B8L.toB256 <| data.sliceD 32 32 (0x00 : B8)) with
         | 0x1B => some false
         | 0x1C => some true
         | _ => .none ) | .ok evm
-  let r := B8L.toB256P <| data.sliceD 64 32 (0x00 : B8)
-  let s := B8L.toB256P <| data.sliceD 96 32 (0x00 : B8)
+  let r := B8L.toB256 <| data.sliceD 64 32 (0x00 : B8)
+  let s := B8L.toB256 <| data.sliceD 96 32 (0x00 : B8)
   if r = 0 ∨ s = 0 ∨
      r ≥ secp256k1.curveOrder.toB256 ∨
      s ≥ secp256k1.curveOrder.toB256 then
@@ -2006,7 +2006,7 @@ def executeRipemd160 (evm : Evm) : Execution := do
   let cost : Nat := 600 + (120 * (ceilDiv data.length 32))
   let evm ← chargeGas cost evm
   let hash : B8L := data.ripemd160
-  let output : B8L := B256.toB8L <| (B8L.toB256P <| hash)
+  let output : B8L := B256.toB8L <| (B8L.toB256 <| hash)
   .ok {evm with output := output}
 
 def executeId (evm : Evm) : Execution := do
@@ -2177,7 +2177,7 @@ def spit_le_to_B64 (data: B8L) : Nat → Nat → List B64
   | _, 0 => []
   | start, num_words + 1 =>
     let wordBytes := data.sliceD start 8 (0x00 : B8)
-    let word := B8L.toB64P wordBytes.reverse
+    let word := B8L.toB64 wordBytes.reverse
     word :: spit_le_to_B64 data (start + 8) num_words
 
 -- def get_blake2_parameters
@@ -2725,7 +2725,7 @@ mutual
   def Ninst.run (vb : Bool) (evm : Evm) : Ninst → Nat → Execution
     | .push xs _, _ => do
       let evm ← chargeGas (if xs.length = 0 then gBase else gVerylow) evm
-      let evm ← evm.push xs.toB256P
+      let evm ← evm.push xs.toB256
       .ok {evm with pc := evm.pc + xs.length + 1}
     --| .push x len, _ => do
     --  let evm ← chargeGas (if len = 0 then gBase else gVerylow) evm
@@ -3423,8 +3423,8 @@ def Tx.signingHash (tx : Tx) : Option B256 :=
 
 -- recover_sender
 def recoverSender (chain_id: B64) (tx: Tx) : Except String Adr := do
-  let r := tx.r.toB256P
-  let s := tx.s.toB256P
+  let r := tx.r.toB256
+  let s := tx.s.toB256
   if (r = 0 ∨ secp256k1.curveOrder.toB256 ≤ r) then
     .error "InvalidSignatureError : bad r"
   if (s = 0 ∨ secp256k1.curveOrder.toB256 / 2 < s) then
@@ -3927,7 +3927,7 @@ def B8L.toExStrTx : B8L → Except String Tx
         .b8s r,
         .b8s s
       ] => do .ok {
-          nonce := nonce.toB64P,
+          nonce := nonce.toB64,
           gas := gas.toNat,
           value := value.toNat,
           data := data,
@@ -3936,7 +3936,7 @@ def B8L.toExStrTx : B8L → Except String Tx
           s := (s.reverse.takeD 32 0).reverse,
           type :=
             .one
-              chainId.toB64P
+              chainId.toB64
               gasPrice.toNat
               receiver.toAdr?
               (← accessList.toAccessList.toExcept "cannot decode access list")
@@ -3955,7 +3955,7 @@ def B8L.toExStrTx : B8L → Except String Tx
         .b8s r,
         .b8s s
       ] => do .ok {
-        nonce := nonce.toB64P,
+        nonce := nonce.toB64,
         gas := gas.toNat,
         value := value.toNat,
         data := data,
@@ -3964,7 +3964,7 @@ def B8L.toExStrTx : B8L → Except String Tx
         s := (s.reverse.takeD 32 0).reverse,
         type :=
           .two
-            chainId.toB64P
+            chainId.toB64
             maxPriorityFee.toNat
             maxFee.toNat
             receiver.toAdr?
@@ -3986,7 +3986,7 @@ def B8L.toExStrTx : B8L → Except String Tx
         .b8s r,
         .b8s s
       ] => do .ok {
-        nonce := nonce.toB64P,
+        nonce := nonce.toB64,
         gas := gas.toNat,
         value := value.toNat,
         data := data,
@@ -3995,7 +3995,7 @@ def B8L.toExStrTx : B8L → Except String Tx
         s := (s.reverse.takeD 32 0).reverse,
         type :=
           .three
-            chainId.toB64P
+            chainId.toB64
             maxPriorityFee.toNat
             maxFee.toNat
             (← receiver.toAdr?.toExcept "DecodingError")
@@ -4264,10 +4264,10 @@ def BLT.toExStrWithdrawal : BLT → Except String Withdrawal
       .b8s recipient,
       .b8s amount
     ] => do
-    let globalIndex := globalIndex.toB64P
-    let validatorIndex := validatorIndex.toB64P
+    let globalIndex := globalIndex.toB64
+    let validatorIndex := validatorIndex.toB64
     let recipient ← recipient.toAdr?.toExcept "error : invalid recipient address"
-    let amount := amount.toB256P
+    let amount := amount.toB256
     .ok {
       globalIndex := globalIndex,
       validatorIndex := validatorIndex,
@@ -4288,7 +4288,7 @@ def BLT.toExStrTx : BLT → Except String Tx
       .b8s r,
       .b8s s
     ] => .ok {
-      nonce := nonce.toB64P,
+      nonce := nonce.toB64,
       gas := gas.toNat
       value := value.toNat,
       data := data,
