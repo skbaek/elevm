@@ -3050,7 +3050,7 @@ def Sta.toString (s : Sta) : String := String.joinln s.toStrings
 instance : ToString Sta := ⟨Sta.toString⟩
 
 def correctBlobHashVersion (h : B256) : Prop :=
-  h.toB8V[0] = 0x01
+  h.toB8L[0]! = 0x01
 
 instance : DecidablePred correctBlobHashVersion := by
   intro h; simp [correctBlobHashVersion]; infer_instance
@@ -3635,7 +3635,7 @@ def checkTransaction (benv : Benv) (blockOut : BlockOutput) (tx : Tx) :
   | .three _ _ _ _ _ maxBlobFee blobHashes =>
     if blobHashes.isEmpty then
       .error "NoBlobDataError : no blob data in transaction"
-    if List.any blobHashes (λ bvh => bvh.toB8V.head ≠ versionedHashVersionKzg) then
+    if List.any blobHashes (λ bvh => bvh.toB8L[0]! ≠ versionedHashVersionKzg) then
       .error "InvalidBlobVersionedHashError : invalid blob versioned hash"
     let blobGasPrice := calculate_blob_gas_price benv.excessBlobGas
     if maxBlobFee < blobGasPrice then

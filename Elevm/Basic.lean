@@ -293,13 +293,13 @@ def Nat.toBool : Nat → Bool
   | 0 => 0
   | _ => 1
 
-abbrev Vec := Vector
-
-def B64.toB8V (x : B64) : Vec B8 8 :=
-  ⟨ #[ (x >>> 56).toUInt8, (x >>> 48).toUInt8,
-       (x >>> 40).toUInt8, (x >>> 32).toUInt8,
-       (x >>> 24).toUInt8, (x >>> 16).toUInt8,
-       (x >>> 8).toUInt8, x.toUInt8 ], rfl ⟩
+-- abbrev Vec := Vector
+--
+-- def B64.toB8V (x : B64) : Vec B8 8 :=
+--   ⟨ #[ (x >>> 56).toUInt8, (x >>> 48).toUInt8,
+--        (x >>> 40).toUInt8, (x >>> 32).toUInt8,
+--        (x >>> 24).toUInt8, (x >>> 16).toUInt8,
+--        (x >>> 8).toUInt8, x.toUInt8 ], rfl ⟩
 
 def B64.toB8L (x : B64) : B8L :=
   [ (x >>> 56).toUInt8, (x >>> 48).toUInt8,
@@ -320,11 +320,23 @@ def B64.reverse (w : B64) : B64 :=
 def B128.toB8L (x : B128) : B8L := x.1.toB8L ++ x.2.toB8L
 def B256.toB8L (x : B256) : B8L := x.1.toB8L ++ x.2.toB8L
 
-def B128.toB8V (x : B128) : Vec B8 16 :=
-  Vector.append x.1.toB8V x.2.toB8V
+def List.ekat {ξ : Type u} (n : Nat) (xs : List ξ) : List ξ :=
+  (xs.reverse.take n).reverse
 
-def B256.toB8V (x : B256) : Vec B8 32 :=
-  Vector.append x.1.toB8V x.2.toB8V
+def List.ekatD {ξ : Type u} (n : Nat) (xs : List ξ) (x : ξ) : List ξ :=
+  (xs.reverse.takeD n x).reverse
+
+theorem List.length_takeD {ξ : Type u} (n : Nat) (xs : List ξ) (x : ξ) :
+    (List.takeD n xs x).length = n := by
+  induction n generalizing xs with
+  | zero => simp
+  | succ n ih => simp; apply ih
+
+theorem List.length_ekatD {ξ : Type u} (n : Nat) (xs : List ξ) (x : ξ) :
+    (List.ekatD n xs x).length = n := by
+  apply Eq.trans List.length_reverse
+  apply Eq.trans (List.length_takeD _ _ _) rfl
+def B8L.pack (xs : B8L) (n : Nat) : B8L := List.ekatD n xs 0
 
 def B128.toNat (x : B128) : Nat := (x.1.toNat * (2 ^ 64)) + x.2.toNat
 def B256.toNat (x : B256) : Nat := (x.1.toNat * (2 ^ 128)) + x.2.toNat
@@ -341,8 +353,8 @@ def B256.mulmod (x y z : B256) : B256 :=
 
 def B256.signext (x y : B256) : B256 :=
   if h : x < 31 then
-    have h' : (32 - (x.toNat + 1)) < 32 := by omega
-    let z : B8 := y.toB8V.get ⟨32 - (x.toNat + 1), h'⟩
+    have h : (32 - (x.toNat + 1)) < 32 := by omega
+    let z : B8 := (B8L.pack y.toB8L 32)[32 - (x.toNat + 1)]
     cond z.highBit
       ((B256.max <<< (8 * (x.toNat + 1))) ||| y)
       ((B256.max >>> (256 - (8 * (x.toNat + 1)))) &&& y)
@@ -719,22 +731,6 @@ def B8L.toB128Diff : B8L → Option (B128 × B8L)
       ⟩
   | _ => none
 
-def List.ekat {ξ : Type u} (n : Nat) (xs : List ξ) : List ξ :=
-  (xs.reverse.take n).reverse
-
-def List.ekatD {ξ : Type u} (n : Nat) (xs : List ξ) (x : ξ) : List ξ :=
-  (xs.reverse.takeD n x).reverse
-
-theorem List.length_takeD {ξ : Type u} (n : Nat) (xs : List ξ) (x : ξ) :
-    (List.takeD n xs x).length = n := by
-  induction n generalizing xs with
-  | zero => simp
-  | succ n ih => simp; apply ih
-
-theorem List.length_ekatD {ξ : Type u} (n : Nat) (xs : List ξ) (x : ξ) :
-    (List.ekatD n xs x).length = n := by
-  apply Eq.trans List.length_reverse
-  apply Eq.trans (List.length_takeD _ _ _) rfl
 
 def B8L.toB256? (xs : B8L) : Option B256 := do
   let ⟨h, xs'⟩ ← xs.toB128Diff
@@ -746,23 +742,6 @@ def Hex.toB64? (hx : String) : Option B64 := do
 
 def Hex.toB256? (hx : String) : Option B256 := do
   Hex.toB8L hx >>= B8L.toB256?
-
--- def B8V.toB64 (v : Vec B8 8) : B64 :=
---   B8s.toB64 v[0] v[1] v[2] v[3] v[4] v[5] v[6] v[7]
---
--- def B8V.toB128 (v : Vec B8 16) : B128 :=
---     ⟨ B8s.toB64 v[0x0] v[0x1] v[0x2] v[0x3] v[0x4] v[0x5] v[0x6] v[0x7],
---       B8s.toB64 v[0x8] v[0x9] v[0xA] v[0xB] v[0xC] v[0xD] v[0xE] v[0xF] ⟩
---
--- def B8V.toB256 (xs : Vec B8 32) : B256 :=
---   let h : Vec B8 16 := xs.take 16
---   let l : Vec B8 16 := xs.drop 16
---   ⟨B8V.toB128 h, B8V.toB128 l⟩
-
-def B8L.pack (xs : B8L) (n : Nat) : B8L := List.ekatD n xs 0
-
--- def B8L.toB8V (xs : B8L) (n : Nat) : Vec B8 n :=
---   ⟨⟨xs.pack n⟩, List.length_ekatD _ _ _⟩
 
 def B8L.toB64 (xs : B8L) : B64 :=
   let v := xs.pack 8
@@ -780,9 +759,6 @@ def B8L.toB256 (xs : B8L) : B256 :=
   let xh := xs'.take 16
   let xl := xs'.drop 16
   ⟨B8L.toB128 xh, B8L.toB128 xl⟩
-
--- def B8L.toB256P (xs : B8L) : B256 := B8V.toB256 (xs.toB8V 32)
--- def B8L.toB64P (xs : B8L) : B64 := B8V.toB64 (xs.toB8V 8)
 
 def IO.guard (φ : Prop) [Decidable φ] (msg : String) : IO Unit :=
   if φ then return () else IO.throw msg

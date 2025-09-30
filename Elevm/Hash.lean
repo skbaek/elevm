@@ -290,12 +290,12 @@ def θ {ξ : Type u} [XorOp ξ] [Inhabited ξ]
     ws[(x + 10)]! ^^^
     ws[(x + 15)]! ^^^
     ws[(x + 20)]!
-  let initVec : Vec ξ 5 :=
+  let initVec : Vector ξ 5 :=
     ⟨#[prep 0, prep 1, prep 2, prep 3, prep 4], rfl⟩
   let rec inner (t : ξ) (i : Nat) : Nat → Array ξ → Array ξ
     | 0, ws => ws
     | j + 1, ws => inner t i j <| Array.app ((j * 5) + i) (· ^^^ t) ws
-  let rec outer (bc : Vec ξ 5) : Nat → Array ξ → Array ξ
+  let rec outer (bc : Vector ξ 5) : Nat → Array ξ → Array ξ
     | 0, ws => ws
     | i + 1, ws =>
       let t : ξ := bc.get (.ofNat _ (i + 4)) ^^^ rol (bc.get (.ofNat _ (i + 1))) 1

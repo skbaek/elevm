@@ -46,12 +46,12 @@ def Lean.Json.toIoB256 (j : Json) : IO B256 := do
 def Lean.Json.toIoB64P (j : Json) : IO B64 := do
   let x ← toIoString j >>= .remove0x
   let xs ← (Hex.toB8L x).toIO ""
-  return (B8L.toB64P xs)
+  return (B8L.toB64 xs)
 
 def Lean.Json.toIoB256P (j : Json) : IO B256 := do
   let x ← toIoString j >>= .remove0x
   let xs ← (Hex.toB8L x).toIO ""
-  return (B8L.toB256P xs)
+  return (B8L.toB256 xs)
 
 def Lean.Json.toAcct : Lean.Json → IO Acct
   | .obj r => do
@@ -59,7 +59,7 @@ def Lean.Json.toAcct : Lean.Json → IO Acct
       let x ← .remove0x xy.fst
       let bs ← (Hex.toB8L x).toIO ""
       let bs' ← xy.snd.toIoB8L
-      return ⟨bs.toB256P, bs'.toB256P⟩
+      return ⟨bs.toB256, bs'.toB256⟩
     let bal_json ← (r.get? "balance").toIO ""
     let nonce_json ← (r.get? "nonce").toIO ""
     let code_json ← (r.get? "code").toIO ""
