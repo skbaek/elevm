@@ -3,6 +3,7 @@
 
 import Mathlib.Data.Nat.Basic
 import Mathlib.Data.List.Lemmas
+import Mathlib.Data.List.TakeDrop
 -- import Mathlib.Util.Notation3
 -- import Mathlib.Data.Vector.Basic
 
@@ -293,11 +294,20 @@ def Nat.toBool : Nat → Bool
   | 0 => 0
   | _ => 1
 
+def B16.toB8L (x : B16) : B8L :=
+  [(x >>> 8).toUInt8, x.toUInt8]
+
+def B32.toB8L (x : B32) : B8L :=
+  B16.toB8L (x >>> 16).toUInt16 ++ B16.toB8L x.toUInt16
+
 def B64.toB8L (x : B64) : B8L :=
-  [ (x >>> 56).toUInt8, (x >>> 48).toUInt8,
-    (x >>> 40).toUInt8, (x >>> 32).toUInt8,
-    (x >>> 24).toUInt8, (x >>> 16).toUInt8,
-    (x >>> 8).toUInt8, x.toUInt8 ]
+  B32.toB8L (x >>> 32).toUInt32 ++ B32.toB8L x.toUInt32
+
+-- def B64.toB8L (x : B64) : B8L :=
+--   [ (x >>> 56).toUInt8, (x >>> 48).toUInt8,
+--     (x >>> 40).toUInt8, (x >>> 32).toUInt8,
+--     (x >>> 24).toUInt8, (x >>> 16).toUInt8,
+--     (x >>> 8).toUInt8, x.toUInt8 ]
 
 def B64.reverse (w : B64) : B64 :=
   ((w <<< 56) &&& (0xFF00000000000000 : B64)) |||
@@ -322,7 +332,7 @@ theorem List.length_takeD {ξ : Type u} (n : Nat) (xs : List ξ) (x : ξ) :
     (List.takeD n xs x).length = n := by
   induction n generalizing xs with
   | zero => simp
-  | succ n ih => simp; apply ih
+  | succ n ih => simp --; apply ih
 
 theorem List.length_ekatD {ξ : Type u} (n : Nat) (xs : List ξ) (x : ξ) :
     (List.ekatD n xs x).length = n := by
@@ -666,9 +676,9 @@ def remove0x : String → String
   | s => s
 
 def B8s.toB16 (a b : B8) : B16 :=
-  let a16 : B16 := a.toUInt16
-  let b16 : B16 := b.toUInt16
-  (a16 <<< 8) ||| b16
+  let high : B16 := a.toUInt16
+  let low : B16 := b.toUInt16
+  (high <<< 8) ||| low
 
 def B8s.toB32 (a b c d : B8) : B32 :=
   let a32 : B32 := a.toUInt32
@@ -695,20 +705,39 @@ def B8s.toB64 (a b c d e f g h : B8) : B64 :=
   (g64 <<< 8)  |||
   h64
 
-def B8s.toB128
-  (x0 x1 x2 x3 x4 x5 x6 x7 y0 y1 y2 y3 y4 y5 y6 y7 : B8) : B128 :=
-  ⟨ B8s.toB64 x0 x1 x2 x3 x4 x5 x6 x7,
-    B8s.toB64 y0 y1 y2 y3 y4 y5 y6 y7 ⟩
+-- def B8s.toB128
+--   (x0 x1 x2 x3 x4 x5 x6 x7 y0 y1 y2 y3 y4 y5 y6 y7 : B8) : B128 :=
+--   ⟨ B8s.toB64 x0 x1 x2 x3 x4 x5 x6 x7,
+--     B8s.toB64 y0 y1 y2 y3 y4 y5 y6 y7 ⟩
+--
+-- def B8s.toB256
+--   ( x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 xA xB xC xD xE xF
+--     y0 y1 y2 y3 y4 y5 y6 y7 y8 y9 yA yB yC yD yE yF : B8 ) : B256 :=
+--   ⟨ B8s.toB128 x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 xA xB xC xD xE xF,
+--     B8s.toB128 y0 y1 y2 y3 y4 y5 y6 y7 y8 y9 yA yB yC yD yE yF ⟩
 
-def B8s.toB256
-  ( x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 xA xB xC xD xE xF
-    y0 y1 y2 y3 y4 y5 y6 y7 y8 y9 yA yB yC yD yE yF : B8 ) : B256 :=
-  ⟨ B8s.toB128 x0 x1 x2 x3 x4 x5 x6 x7 x8 x9 xA xB xC xD xE xF,
-    B8s.toB128 y0 y1 y2 y3 y4 y5 y6 y7 y8 y9 yA yB yC yD yE yF ⟩
 
-def B8L.toB64? : B8L → Option B64
-  | [x0, x1, x2, x3, x4, x5, x6, x7] => B8s.toB64 x0 x1 x2 x3 x4 x5 x6 x7
-  | _ => .none
+
+def B8L.toB16 (xs : B8L) : B16 :=
+  let v := xs.pack 2
+  let high : B16 := v[0]!.toUInt16
+  let low : B16 := v[1]!.toUInt16
+  (high <<< 8) ||| low
+
+def B8L.toB32 (xs : B8L) : B32 :=
+  let v := xs.pack 4
+  let high : B32 := (B8L.toB16 (v.take 2)).toUInt32
+  let low  : B32 := (B8L.toB16 (v.drop 2)).toUInt32
+  (high <<< 16) ||| low
+
+def B8L.toB64 (xs : B8L) : B64 :=
+  let v := xs.pack 8
+  let high : B64 := (B8L.toB32 (v.take 4)).toUInt64
+  let low  : B64 := (B8L.toB32 (v.drop 4)).toUInt64
+  (high <<< 32) ||| low
+
+def B8L.toB64? (xs : B8L) : Option B64 :=
+  if xs.length = 8 then some (B8L.toB64 xs) else none
 
 def B8L.toB128Diff : B8L → Option (B128 × B8L)
   | x0 :: x1 :: x2 :: x3 ::
@@ -723,7 +752,6 @@ def B8L.toB128Diff : B8L → Option (B128 × B8L)
       ⟩
   | _ => none
 
-
 def B8L.toB256? (xs : B8L) : Option B256 := do
   let ⟨h, xs'⟩ ← xs.toB128Diff
   let ⟨l, []⟩ ← xs'.toB128Diff | none
@@ -734,10 +762,119 @@ def Hex.toB64? (hx : String) : Option B64 := do
 
 def Hex.toB256? (hx : String) : Option B256 := do
   Hex.toB8L hx >>= B8L.toB256?
+-- def B8L.toB64 (xs : B8L) : B64 :=
+--   let v := xs.pack 8
+--   B8s.toB64 v[0]! v[1]! v[2]! v[3]! v[4]! v[5]! v[6]! v[7]!
 
-def B8L.toB64 (xs : B8L) : B64 :=
-  let v := xs.pack 8
-  B8s.toB64 v[0]! v[1]! v[2]! v[3]! v[4]! v[5]! v[6]! v[7]!
+lemma B16.length_toB8L (x : B16) : x.toB8L.length = 2 := rfl
+lemma B32.length_toB8L (x : B32) : x.toB8L.length = 4 := rfl
+lemma B64.length_toB8L (x : B64) : x.toB8L.length = 8 := rfl
+lemma B128.length_toB8L (x : B128) : x.toB8L.length = 16 := rfl
+lemma B256.length_toB8L (w : B256) : w.toB8L.length = 32 := rfl
+
+theorem List.takeD_eq_self {ξ : Type u} {n : ℕ} {xs : List ξ} (x : ξ)
+    (h : n = xs.length) : List.takeD n xs x = xs := by
+  rw [takeD_eq_take x <| le_of_eq h, take_of_length_le <| le_of_eq h.symm]
+
+lemma B8L.pack_eq_self {xs n} (h : xs.length = n) : B8L.pack xs n = xs := by
+  simp only [pack, List.ekatD]
+  rw [List.takeD_eq_self]
+  · apply List.reverse_reverse
+  · rw [List.length_reverse, h]
+
+lemma List.take_length_append {ξ} {xs ys : List ξ} :
+    List.take xs.length (xs ++ ys) = xs := by
+  apply Eq.trans <| List.take_length_add_append 0
+  simp [take_zero]
+
+lemma List.take_length_append' {ξ} {n} {xs ys : List ξ} (h : n = xs.length) :
+    List.take n (xs ++ ys) = xs := by
+  rw [h]; apply List.take_length_append
+
+lemma List.drop_length_append {ξ} {xs ys : List ξ} :
+    List.drop xs.length (xs ++ ys) = ys := by
+  apply Eq.trans <| List.drop_length_add_append 0
+  simp [drop_zero]
+
+lemma List.drop_length_append' {ξ} {n} {xs ys : List ξ} (h : n = xs.length) :
+    List.drop n (xs ++ ys) = ys := by
+  rw [h]; apply List.drop_length_append
+
+lemma high_or_low_eq_self (n o : Nat) (h : n < 2 ^ (o + o)) :
+    (n >>> o % (2 ^ o)) <<< o % (2 ^ (o + o)) ||| n % (2 ^ o) = n := by
+  have h_lt : (n >>> o) < 2 ^ o := by
+    rw [Nat.shiftRight_eq_div_pow]
+    have h_dvd := @Nat.pow_dvd_pow o (o + o) 2 (by omega)
+    have h_lt := @Nat.div_lt_div_of_lt_of_dvd n (2 ^ (o + o)) (2 ^ o) h_dvd h
+    have h_div := @Nat.pow_div 2 (o + o) o (by omega) (by omega)
+    rw [h_div] at h_lt
+    simp at h_lt
+    apply h_lt
+  rw [Nat.mod_eq_of_lt h_lt]
+  rw [Nat.shiftRight_eq_div_pow]
+  rw [Nat.shiftLeft_eq]
+  have h_lt' : n / (2 ^ o) * (2 ^ o) < 2 ^ (o + o) := by
+    apply lt_of_le_of_lt _ h
+    rw [Nat.mul_comm]; apply Nat.mul_div_le
+  rw [Nat.mod_eq_of_lt h_lt']
+  have high_or_low_eq_self := @Nat.mod_lt n (2 ^ o) (Nat.pow_pos (by omega))
+  have h_rw := @Nat.shiftLeft_add_eq_or_of_lt o (n % (2 ^ o)) high_or_low_eq_self (n / (2 ^ o))
+  rw [← Nat.shiftLeft_eq, ← h_rw]
+  rw [Nat.shiftLeft_eq]
+  rw [Nat.add_comm, Nat.mul_comm]
+  apply Nat.mod_add_div
+
+lemma B16.toB16_toB8L (x : B16) : x.toB8L.toB16 = x := by
+  simp only [B16.toB8L, B8L.toB16]
+  rw [B8L.pack_eq_self (by rfl)]
+  simp
+  rw [← UInt16.toNat_inj]
+  rw [UInt16.toNat_or]
+  rw [UInt16.toNat_shiftLeft]
+  rw [UInt16.toNat_mod]
+  rw [UInt16.toNat_shiftRight]
+  simp
+  apply high_or_low_eq_self
+  apply UInt16.toNat_lt
+
+lemma B32.toB32_toB8L (x : B32) : x.toB8L.toB32 = x := by
+  simp only [B32.toB8L, B8L.toB32]
+  have h_len : ∀ {a b : B16}, List.length (a.toB8L ++ b.toB8L) = 4 := by
+    intros; rw [List.length_append, B16.length_toB8L, B16.length_toB8L]
+  rw [B8L.pack_eq_self h_len]
+  rw [ List.take_length_append' (B16.length_toB8L _).symm,
+       List.drop_length_append' (B16.length_toB8L _).symm ]
+  rw [B16.toB16_toB8L, B16.toB16_toB8L]
+  rw [UInt32.toUInt32_toUInt16]
+  rw [UInt32.toUInt32_toUInt16]
+  rw [← UInt32.toNat_inj]
+  rw [UInt32.toNat_or]
+  rw [UInt32.toNat_shiftLeft]
+  rw [UInt32.toNat_mod]
+  rw [UInt32.toNat_shiftRight]
+  simp
+  apply high_or_low_eq_self
+  apply UInt32.toNat_lt
+
+lemma B64.toB64_toB8L (x : B64) : x.toB8L.toB64 = x := by
+  simp only [B64.toB8L, B8L.toB64]
+  have h_len : ∀ {a b : B32}, List.length (a.toB8L ++ b.toB8L) = 8 := by
+    intros; rw [List.length_append, B32.length_toB8L, B32.length_toB8L]
+  rw [B8L.pack_eq_self h_len]
+  rw [ List.take_length_append' (B32.length_toB8L _).symm,
+       List.drop_length_append' (B32.length_toB8L _).symm ]
+  rw [B32.toB32_toB8L]
+  rw [B32.toB32_toB8L]
+  rw [UInt64.toUInt64_toUInt32]
+  rw [UInt64.toUInt64_toUInt32]
+  rw [← UInt64.toNat_inj]
+  rw [UInt64.toNat_or]
+  rw [UInt64.toNat_shiftLeft]
+  rw [UInt64.toNat_mod]
+  rw [UInt64.toNat_shiftRight]
+  simp
+  apply high_or_low_eq_self
+  apply UInt64.toNat_lt
 
 def B8L.toB128 (xs : B8L) : B128 :=
   let xs' := xs.pack 16
@@ -750,6 +887,30 @@ def B8L.toB256 (xs : B8L) : B256 :=
   let xh := xs'.take 16
   let xl := xs'.drop 16
   ⟨B8L.toB128 xh, B8L.toB128 xl⟩
+
+lemma B128.toB128_toB8L (x : B128) : x.toB8L.toB128 = x := by
+  simp only [B8L.toB128]
+  have h_len := B128.length_toB8L x
+  rw [B8L.pack_eq_self h_len]
+  simp only [B128.toB8L]
+  have h_take := @List.take_length_append _ x.1.toB8L x.2.toB8L
+  rw [B64.length_toB8L] at h_take
+  have h_drop := @List.drop_length_append _ x.1.toB8L x.2.toB8L
+  rw [B64.length_toB8L] at h_drop
+  rw [h_take, h_drop]
+  simp [B64.toB64_toB8L]
+
+lemma B256.toB256_toB8L (x : B256) : x.toB8L.toB256 = x := by
+  simp only [B8L.toB256]
+  have h_len := B256.length_toB8L x
+  rw [B8L.pack_eq_self h_len]
+  simp only [B256.toB8L]
+  have h_take := @List.take_length_append _ x.1.toB8L x.2.toB8L
+  rw [B128.length_toB8L] at h_take
+  have h_drop := @List.drop_length_append _ x.1.toB8L x.2.toB8L
+  rw [B128.length_toB8L] at h_drop
+  rw [h_take, h_drop]
+  simp [B128.toB128_toB8L]
 
 def IO.guard (φ : Prop) [Decidable φ] (msg : String) : IO Unit :=
   if φ then return () else IO.throw msg
@@ -793,8 +954,6 @@ def B256.min : B256 → B256 → B256
   | xs, ys => if xs ≤ ys then xs else ys
 instance : Min B256 := ⟨.min⟩
 
-def B16.toB8L (x : B16) : List B8 := [x.highs, x.lows]
-def B32.toB8L (x : B32) : List B8 := x.highs.toB8L ++ x.lows.toB8L
 def B8.toB4s (x : B8) : List B8 := [x.highs, x.lows]
 def B16.toB4s (x : B16) : List B8 := x.highs.toB4s ++ x.lows.toB4s
 def B32.toB4s (x : B32) : List B8 := x.highs.toB4s ++ x.lows.toB4s
