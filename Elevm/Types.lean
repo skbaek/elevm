@@ -20,6 +20,8 @@ def Nat.toAdr (n : Nat) : Adr :=
     low  := n.toUInt64
   }
 
+instance {n} : OfNat Adr n := ⟨n.toAdr⟩
+
 lemma Nat.toNat_toUInt32 {n : ℕ} : n.toUInt32.toNat = n % 2 ^ 32 :=
   UInt32.toNat_ofNat
 lemma Nat.toNat_toUInt64 {n : ℕ} : n.toUInt64.toNat = n % 2 ^ 64 :=
@@ -56,7 +58,54 @@ lemma Nat.toNat_toAdr (n : Nat) : n.toAdr.toNat = n % (2 ^ 160) := by
   rw [← @Nat.mod_mod_of_dvd (2 ^ 128) (2 ^ 160) n (Nat.pow_dvd_pow _ (by omega))]
   rw [Nat.div_add_mod']
 
-instance {n} : OfNat Adr n := ⟨n.toAdr⟩
+
+lemma Nat.add_div_of_dvd_of_dvd {a b c : ℕ} (ha : c ∣ a) (hb : c ∣ b) (hc : 0 < c) :
+    (a + b) / c = a / c + b / c := by
+  rw [Nat.add_div hc, if_neg]
+  · rfl
+  · rw [Nat.mod_eq_zero_of_dvd ha, Nat.mod_eq_zero_of_dvd hb]
+    intro h; cases lt_of_lt_of_le hc h
+
+lemma Nat.add_div_of_dvd_of_lt {a b c : ℕ} (ha : c ∣ a) (hb : b < c) :
+    (a + b) / c = a / c + b / c := by
+  rw [Nat.add_div (zero_lt_of_lt hb), if_neg]
+  · rfl
+  · rw [Nat.mod_eq_zero_of_dvd ha, Nat.mod_eq_of_lt hb]; simp [hb]
+
+lemma B64.toNat_mul_add_toNat_lt_size (x y : B64) :
+    x.toNat * (2 ^ 64) + y.toNat < 2 ^ 128 := by
+  have h : 2 ^ 128 = (UInt64.size - 1) * (2 ^ 64) + UInt64.size := by rfl
+  rw [h]; clear h
+  apply Nat.add_lt_add_of_le_of_lt _ (UInt64.toNat_lt_size _)
+  apply Nat.mul_le_mul_right
+  apply @Nat.le_pred_of_lt _ (UInt64.size) <| UInt64.toNat_lt_size _
+
+lemma Adr.toAdr_toNat (a : Adr) : a.toNat.toAdr = a := by
+  have aux : ∀ x : Nat, x * (2 ^ 128) = x * (2 ^ 64) * (2 ^ 64) := by
+    intro x; rw [Nat.mul_assoc]
+  simp only [Nat.toAdr, Adr.toNat]
+  have h_high :
+      ((a.high.toNat * 2 ^ 128 + a.mid.toNat * 2 ^ 64 + a.low.toNat) / 2 ^ 128).toUInt32 = a.high := by
+    rw [Nat.add_assoc, Nat.add_div_of_dvd_of_lt]
+    · have h_lt := B64.toNat_mul_add_toNat_lt_size a.mid a.low
+      rw [Nat.div_eq_of_lt h_lt, Nat.mul_div_cancel _ (Nat.two_pow_pos _)]
+      apply UInt32.ofNat_toNat
+    · apply Nat.dvd_mul_left
+    · apply B64.toNat_mul_add_toNat_lt_size
+  rw [h_high]; clear h_high
+  have h_mid :
+      ((a.high.toNat * 2 ^ 128 + a.mid.toNat * 2 ^ 64 + a.low.toNat) / 2 ^ 64).toUInt64 = a.mid := by
+    rw [Nat.add_div_of_dvd_of_lt _ (UInt64.toNat_lt_size _)]
+    · rw [Nat.div_eq_of_lt <| UInt64.toNat_lt_size a.low, Nat.add_zero]
+      have h_dvd : 2 ^ 64 ∣ UInt32.toNat a.high * 2 ^ 128 := by
+        rw [aux]; apply Nat.dvd_mul_left
+      rw [Nat.add_div_of_dvd_of_dvd h_dvd (Nat.dvd_mul_left _ _) (Nat.two_pow_pos _)]
+      rw [Nat.mul_div_cancel _ (Nat.two_pow_pos _)]
+      rw [aux, Nat.mul_div_cancel _ (Nat.two_pow_pos _)]
+      simp
+    · rw [aux]; apply Nat.dvd_add <;> apply Nat.dvd_mul_left
+  rw [h_mid]; clear h_mid
+  simp
 
 def Adr.ordering : Adr → Adr → Ordering
   | ⟨xh, xm, xl⟩, ⟨yh, ym, yl⟩ =>
