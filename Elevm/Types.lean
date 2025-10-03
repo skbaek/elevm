@@ -14,15 +14,47 @@ def Adr.toNat (x : Adr) : Nat :=
   x.low.toNat
 
 def Nat.toAdr (n : Nat) : Adr :=
-  let h := n / (2 ^ 128)
-  let r := n % (2 ^ 128)
-  let m := r / (2 ^ 64)
-  let l := r % (2 ^ 64)
   {
-    high := h.toUInt32
-    mid  := m.toUInt64
-    low  := l.toUInt64
+    high := (n / (2 ^ 128)).toUInt32
+    mid  := (n / (2 ^ 64)).toUInt64
+    low  := n.toUInt64
   }
+
+lemma Nat.toNat_toUInt32 {n : ℕ} : n.toUInt32.toNat = n % 2 ^ 32 :=
+  UInt32.toNat_ofNat
+lemma Nat.toNat_toUInt64 {n : ℕ} : n.toUInt64.toNat = n % 2 ^ 64 :=
+  UInt64.toNat_ofNat
+
+lemma Nat.mod_two_pow_succ {k m} :
+    (k % (2 ^ (m + 1))) = (k / 2) % (2 ^ m) * 2 + k % 2 := by
+  rw [Nat.pow_succ, Nat.mul_comm, Nat.mod_mul]
+  rw [Nat.add_comm, Nat.mul_comm]
+
+lemma Nat.div_two_pow_mod_two_pow (k m n : Nat) :
+    (k / (2 ^ m)) % (2 ^ n) = (k % (2 ^ (m + n))) / (2 ^ m) := by
+  induction m generalizing k n with
+  | zero => simp
+  | succ m ih =>
+    have h : (k / 2 ^ (m + 1)) = ((k / 2) / 2 ^ m) := by
+      rw [Nat.pow_succ, Nat.mul_comm, Nat.div_div_eq_div_mul]
+    rw [h, ih]; clear h
+    rw [Nat.pow_succ, Nat.mul_comm, ← Nat.div_div_eq_div_mul]
+    have h : m + 1 + n = m + n + 1 := by omega
+    rw [h]; clear h
+    apply congr_arg₂ _ _ rfl
+    rw [Nat.mod_two_pow_succ]
+    rw [@Nat.add_div _ _ 2 (by omega), if_neg]
+    · rw [Nat.mod_div_self, Nat.mul_div_cancel _ (by omega)]; rfl
+    · simp [Nat.mul_mod_left, Nat.mod_lt]
+
+lemma Nat.toNat_toAdr (n : Nat) : n.toAdr.toNat = n % (2 ^ 160) := by
+  simp only [Nat.toAdr, Adr.toNat]
+  simp only [Nat.toNat_toUInt32, Nat.toNat_toUInt64]
+  simp only [Nat.div_two_pow_mod_two_pow]
+  rw [← @Nat.mod_mod_of_dvd (2 ^ 64) (2 ^ 128) n (Nat.pow_dvd_pow _ (by omega))]
+  rw [Nat.add_assoc, Nat.div_add_mod']
+  rw [← @Nat.mod_mod_of_dvd (2 ^ 128) (2 ^ 160) n (Nat.pow_dvd_pow _ (by omega))]
+  rw [Nat.div_add_mod']
 
 instance {n} : OfNat Adr n := ⟨n.toAdr⟩
 
