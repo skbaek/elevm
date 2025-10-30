@@ -374,8 +374,8 @@ def B8L.run : Fin 17 → B8L → Array B64 → B256
     let temp0 := Array.app wc (· ^^^ t) ws
     let temp1 := Array.app 16 (· ^^^ s) temp0
     let ws' := f B64.rdnc temp1 B64.rol
-    (B64.reverse (ws'[0]!) ++ B64.reverse (ws'[1]!)) ++
-    (B64.reverse (ws'[2]!) ++ B64.reverse (ws'[3]!))
+    ⟨ ⟨B64.reverse (ws'[0]!), B64.reverse (ws'[1]!)⟩,
+      ⟨B64.reverse (ws'[2]!), B64.reverse (ws'[3]!)⟩ ⟩
 
 def ByteArray.run (bnd n : Nat) (wc : Fin 17) (bs : ByteArray) (ws : Array B64) : B256 :=
   if 7 < n then
@@ -412,8 +412,8 @@ def ByteArray.run (bnd n : Nat) (wc : Fin 17) (bs : ByteArray) (ws : Array B64) 
     let temp0 := Array.app wc (· ^^^ t) ws
     let temp1 := Array.app 16 (· ^^^ s) temp0
     let ws' := f B64.rdnc temp1 B64.rol
-    (B64.reverse (ws'[0]!) ++ B64.reverse (ws'[1]!)) ++
-    (B64.reverse (ws'[2]!) ++ B64.reverse (ws'[3]!))
+    ⟨ ⟨B64.reverse (ws'[0]!), B64.reverse (ws'[1]!)⟩,
+      ⟨B64.reverse (ws'[2]!), B64.reverse (ws'[3]!)⟩ ⟩
 
 end KECCAK
 

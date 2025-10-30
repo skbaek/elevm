@@ -45,12 +45,12 @@ def B128.lowBit  (x : B128) : Bool := x.2.lowBit
 def B256.highBit (x : B256) : Bool := x.1.highBit
 def B256.lowBit  (x : B256) : Bool := x.2.lowBit
 
-instance : HAppend B64 B64 B128 := ⟨λ xs ys => ⟨xs, ys⟩⟩
-instance : HAppend B128 B128 B256 := ⟨λ xs ys => ⟨xs, ys⟩⟩
+-- instance : HAppend B64 B64 B128 := ⟨λ xs ys => ⟨xs, ys⟩⟩
+-- instance : HAppend B128 B128 B256 := ⟨λ xs ys => ⟨xs, ys⟩⟩
 
 def B64.max : B64 := 0xFFFFFFFFFFFFFFFF
-def B128.max : B128 := (.max : B64) ++ (.max : B64)
-def B256.max : B256 := (.max : B128) ++ (.max : B128)
+def B128.max : B128 := ⟨.max, .max⟩
+def B256.max : B256 := ⟨.max, .max⟩
 
 instance {x y : B128} : Decidable (x = y) := by
   rw [@Prod.ext_iff B64 B64 x y]; apply instDecidableAnd
@@ -71,11 +71,11 @@ instance {x y : B256} : Decidable (x < y) := instDecidableOr
 
 def Nat.toB128 (n : Nat) : B128 :=
   let q := n / (2 ^ 64)
-  q.toUInt64 ++ n.toUInt64
+  ⟨q.toUInt64, n.toUInt64⟩
 
 def Nat.toB256 (n : Nat) : B256 :=
   let q := n / (2 ^ 128)
-  q.toB128 ++ n.toB128
+  ⟨q.toB128, n.toB128⟩
 
 instance {n} : OfNat B128 n := ⟨n.toB128⟩
 instance {n} : OfNat B256 n := ⟨n.toB256⟩
@@ -813,12 +813,16 @@ lemma high_or_low_eq_self (n o : Nat) (h : n < 2 ^ (o + o)) :
   rw [Nat.mod_eq_of_lt h_lt]
   rw [Nat.shiftRight_eq_div_pow]
   rw [Nat.shiftLeft_eq]
+
   have h_lt' : n / (2 ^ o) * (2 ^ o) < 2 ^ (o + o) := by
     apply lt_of_le_of_lt _ h
     rw [Nat.mul_comm]; apply Nat.mul_div_le
   rw [Nat.mod_eq_of_lt h_lt']
+
   have high_or_low_eq_self := @Nat.mod_lt n (2 ^ o) (Nat.pow_pos (by omega))
+
   have h_rw := @Nat.shiftLeft_add_eq_or_of_lt o (n % (2 ^ o)) high_or_low_eq_self (n / (2 ^ o))
+
   rw [← Nat.shiftLeft_eq, ← h_rw]
   rw [Nat.shiftLeft_eq]
   rw [Nat.add_comm, Nat.mul_comm]
