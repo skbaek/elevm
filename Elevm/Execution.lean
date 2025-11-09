@@ -4247,12 +4247,14 @@ def getWithdrawalsRoot (bout : BlockOutput) : B256 :=
     ⟨arg.fst.toB4s, arg.snd.toBLT.toB8L⟩
   trie <| Lean.RBMap.fromList (List.map aux bout.withdrawalsTrie.toList) _
 
--- state_transition
+def stateTransitionOmmersCheck (ommers : List Header) : Except String Unit := do
+  if ¬ommers.isEmpty then do
+    .error "InvalidBlock"
+
 def stateTransition (vb : Bool) (chain : BlockChain) (block : Block) :
   Except String BlockChain := do
   validateHeader chain block.header
-  if ¬block.ommers.isEmpty then do
-    .error "InvalidBlock"
+  stateTransitionOmmersCheck block.ommers
   let benv : Benv := initBenv chain block.header
   let ⟨state, bout⟩ ← applyBody vb benv block.txs block.wds
   let blockStateRoot : B256 := state.root
