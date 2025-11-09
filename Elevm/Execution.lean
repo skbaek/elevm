@@ -4187,6 +4187,27 @@ def State.root (w : State) : B256 :=
   let finalNTB : NTB := Lean.RBMap.fromList keyVals _
   trie finalNTB
 
+def state_transition_checks (bout : BlockOutput) (header : Header)
+    (transactionsRoot blockStateRoot receiptRoot : B256)
+    (blockLogsBloom : B8L) (withdrawalsRoot requestsHash : B256) :
+    Except String Unit := do
+  if bout.blockGasUsed ≠ header.gasUsed then
+    .error s!"InvalidBlock : computed block gas used = {bout.blockGasUsed} ≠ expected block gas used = {header.gasUsed}"
+  if transactionsRoot ≠ header.txsRoot then
+    .error s!"InvalidBlock : computed transactions root = {transactionsRoot} ≠ expected transactions root = {header.txsRoot}"
+  if blockStateRoot ≠ header.stateRoot then
+    .error "InvalidBlock : state root mismatch"
+  if receiptRoot ≠ header.receiptRoot then
+    .error "InvalidBlock : receipt root mismatch"
+  if blockLogsBloom ≠ header.bloom then
+    .error "InvalidBlock : bloom mismatch"
+  if withdrawalsRoot ≠ header.withdrawalsRoot then
+    .error "InvalidBlock : withdrawals root mismatch"
+  if bout.blobGasUsed ≠ header.blobGasUsed then
+    .error "InvalidBlock : blob gas used mismatch"
+  if some requestsHash ≠ header.requestsHash then
+    .error s!"InvalidBlock : expected requests hash = {header.requestsHash}, computed requests hash = {requestsHash}"
+
 -- state_transition
 def state_transition (vb : Bool) (chain : BlockChain) (block : Block) :
   Except String BlockChain := do
@@ -4228,29 +4249,34 @@ def state_transition (vb : Bool) (chain : BlockChain) (block : Block) :
         ⟨key.toB4s, type.val.toB8L ++ receipt.toBLT.toB8L⟩
                 let temp := (List.map receiptAux bout.receiptsTrie.toList)
     trie <| Lean.RBMap.fromList temp _
-  let block_logs_bloom := logsBloom bout.blockLogs
+  let blockLogsBloom := logsBloom bout.blockLogs
   let withdrawalsRoot : B256 :=
     let withdrawalsAux (arg : B8L × Withdrawal) : B8L × B8L :=
       ⟨arg.fst.toB4s, arg.snd.toBLT.toB8L⟩
     let temp := (List.map withdrawalsAux bout.withdrawalsTrie.toList)
     trie <| Lean.RBMap.fromList temp _
   let requestsHash := computeRequestsHash bout.requests
-  if bout.blockGasUsed ≠ block.header.gasUsed then
-    .error s!"InvalidBlock : computed block gas used = {bout.blockGasUsed} ≠ expected block gas used = {block.header.gasUsed}"
-  if transactionsRoot ≠ block.header.txsRoot then
-    .error s!"InvalidBlock : computed transactions root = {transactionsRoot} ≠ expected transactions root = {block.header.txsRoot}"
-  if blockStateRoot ≠ block.header.stateRoot then
-    .error "InvalidBlock : state root mismatch"
-  if receiptRoot ≠ block.header.receiptRoot then
-    .error "InvalidBlock : receipt root mismatch"
-  if block_logs_bloom ≠ block.header.bloom then
-    .error "InvalidBlock : bloom mismatch"
-  if withdrawalsRoot ≠ block.header.withdrawalsRoot then
-    .error "InvalidBlock : withdrawals root mismatch"
-  if bout.blobGasUsed ≠ block.header.blobGasUsed then
-    .error "InvalidBlock : blob gas used mismatch"
-  if some requestsHash ≠ block.header.requestsHash then
-    .error s!"InvalidBlock : expected requests hash = {block.header.requestsHash}, computed requests hash = {requestsHash}"
+
+  state_transition_checks bout block.header
+    transactionsRoot blockStateRoot receiptRoot
+    blockLogsBloom withdrawalsRoot requestsHash
+
+  -- if bout.blockGasUsed ≠ block.header.gasUsed then
+  --   .error s!"InvalidBlock : computed block gas used = {bout.blockGasUsed} ≠ expected block gas used = {block.header.gasUsed}"
+  -- if transactionsRoot ≠ block.header.txsRoot then
+  --   .error s!"InvalidBlock : computed transactions root = {transactionsRoot} ≠ expected transactions root = {block.header.txsRoot}"
+  -- if blockStateRoot ≠ block.header.stateRoot then
+  --   .error "InvalidBlock : state root mismatch"
+  -- if receiptRoot ≠ block.header.receiptRoot then
+  --   .error "InvalidBlock : receipt root mismatch"
+  -- if block_logs_bloom ≠ block.header.bloom then
+  --   .error "InvalidBlock : bloom mismatch"
+  -- if withdrawalsRoot ≠ block.header.withdrawalsRoot then
+  --   .error "InvalidBlock : withdrawals root mismatch"
+  -- if bout.blobGasUsed ≠ block.header.blobGasUsed then
+  --   .error "InvalidBlock : blob gas used mismatch"
+  -- if some requestsHash ≠ block.header.requestsHash then
+  --   .error s!"InvalidBlock : expected requests hash = {block.header.requestsHash}, computed requests hash = {requestsHash}"
   .ok {
     state := state
     blocks := (block :: chain.blocks.reverse.take 254).reverse
