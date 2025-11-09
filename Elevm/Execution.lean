@@ -4187,7 +4187,7 @@ def State.root (w : State) : B256 :=
   let finalNTB : NTB := Lean.RBMap.fromList keyVals _
   trie finalNTB
 
-def state_transition_checks (bout : BlockOutput) (header : Header)
+def stateTransitionChecks (bout : BlockOutput) (header : Header)
     (transactionsRoot blockStateRoot receiptRoot : B256)
     (blockLogsBloom : B8L) (withdrawalsRoot requestsHash : B256) :
     Except String Unit := do
@@ -4208,75 +4208,62 @@ def state_transition_checks (bout : BlockOutput) (header : Header)
   if some requestsHash ≠ header.requestsHash then
     .error s!"InvalidBlock : expected requests hash = {header.requestsHash}, computed requests hash = {requestsHash}"
 
--- state_transition
-def state_transition (vb : Bool) (chain : BlockChain) (block : Block) :
-  Except String BlockChain := do
-  validateHeader chain block.header
-  if ¬block.ommers.isEmpty then do
-    .error "InvalidBlock"
-  let benv : Benv := {
+def initBenv (chain : BlockChain) (header : Header) : Benv :=
+  {
     chainId := chain.chainId,
     state := chain.state,
     origState := chain.state,
     createdAccounts := .emptyWithCapacity,
-    blockGasLimit := block.header.gasLimit,
+    blockGasLimit := header.gasLimit,
     blockHashes := getLast256BlockHashes chain,
-    coinbase := block.header.coinbase,
-    number := block.header.number,
-    baseFeePerGas := block.header.baseFeePerGas,
-    time := block.header.timestamp.toB256,
-    prevRandao := block.header.prevRandao,
-    excessBlobGas := block.header.excessBlobGas,
-    parentBeaconBlockRoot := block.header.parentBeaconBlockRoot
+    coinbase := header.coinbase,
+    number := header.number,
+    baseFeePerGas := header.baseFeePerGas,
+    time := header.timestamp.toB256,
+    prevRandao := header.prevRandao,
+    excessBlobGas := header.excessBlobGas,
+    parentBeaconBlockRoot := header.parentBeaconBlockRoot
   }
+
+def getTransactionsRoot (bout : BlockOutput) : B256 :=
+  let aux (arg : B8L × Tx) : (B8L × B8L) :=
+    let txPrefix : B8L :=
+      match arg.snd.type with
+      | .zero _ _ => []
+      | .one _ _ _ _ => [0x01]
+      | .two _ _ _ _ _ => [0x02]
+      | .three _ _ _ _ _ _ _ => [0x03]
+      | .four _ _ _ _ _ _ => [0x04]
+    ⟨arg.fst.toB4s, txPrefix ++ arg.snd.toBLT.toB8L⟩
+  trie <| Lean.RBMap.fromList (List.map aux bout.transactionsTrie.toList) _
+
+def getReceiptRoot (bout : BlockOutput) : B256 :=
+  let aux : (B8L × Fin 5 × Receipt) → (B8L × B8L)
+    | ⟨key, type, receipt⟩ => ⟨key.toB4s, type.val.toB8L ++ receipt.toBLT.toB8L⟩
+  trie <| Lean.RBMap.fromList (List.map aux bout.receiptsTrie.toList) _
+
+def getWithdrawalsRoot (bout : BlockOutput) : B256 :=
+  let aux (arg : B8L × Withdrawal) : B8L × B8L :=
+    ⟨arg.fst.toB4s, arg.snd.toBLT.toB8L⟩
+  trie <| Lean.RBMap.fromList (List.map aux bout.withdrawalsTrie.toList) _
+
+-- state_transition
+def stateTransition (vb : Bool) (chain : BlockChain) (block : Block) :
+  Except String BlockChain := do
+  validateHeader chain block.header
+  if ¬block.ommers.isEmpty then do
+    .error "InvalidBlock"
+  let benv : Benv := initBenv chain block.header
   let ⟨state, bout⟩ ← applyBody vb benv block.txs block.wds
   let blockStateRoot : B256 := state.root
-  let transactionsRoot : B256 ← do
-    let transactionsAux (arg : B8L × Tx) : (B8L × B8L) :=
-      let txPrefix : B8L :=
-        match arg.snd.type with
-        | .zero _ _ => []
-        | .one _ _ _ _ => [0x01]
-        | .two _ _ _ _ _ => [0x02]
-        | .three _ _ _ _ _ _ _ => [0x03]
-        | .four _ _ _ _ _ _ => [0x04]
-      ⟨arg.fst.toB4s, txPrefix ++ arg.snd.toBLT.toB8L⟩
-    let temp := List.map transactionsAux bout.transactionsTrie.toList
-    .ok <| trie <| Lean.RBMap.fromList temp _
-  let receiptRoot : B256 :=
-    let receiptAux : (B8L × Fin 5 × Receipt) → (B8L × B8L)
-      | ⟨key, type, receipt⟩ =>
-        ⟨key.toB4s, type.val.toB8L ++ receipt.toBLT.toB8L⟩
-                let temp := (List.map receiptAux bout.receiptsTrie.toList)
-    trie <| Lean.RBMap.fromList temp _
-  let blockLogsBloom := logsBloom bout.blockLogs
-  let withdrawalsRoot : B256 :=
-    let withdrawalsAux (arg : B8L × Withdrawal) : B8L × B8L :=
-      ⟨arg.fst.toB4s, arg.snd.toBLT.toB8L⟩
-    let temp := (List.map withdrawalsAux bout.withdrawalsTrie.toList)
-    trie <| Lean.RBMap.fromList temp _
+  let transactionsRoot : B256 := getTransactionsRoot bout
+  let receiptRoot : B256 := getReceiptRoot bout
+  let blockLogsBloom : B8L := logsBloom bout.blockLogs
+  let withdrawalsRoot : B256 := getWithdrawalsRoot bout
   let requestsHash := computeRequestsHash bout.requests
-
-  state_transition_checks bout block.header
+  stateTransitionChecks bout block.header
     transactionsRoot blockStateRoot receiptRoot
     blockLogsBloom withdrawalsRoot requestsHash
-
-  -- if bout.blockGasUsed ≠ block.header.gasUsed then
-  --   .error s!"InvalidBlock : computed block gas used = {bout.blockGasUsed} ≠ expected block gas used = {block.header.gasUsed}"
-  -- if transactionsRoot ≠ block.header.txsRoot then
-  --   .error s!"InvalidBlock : computed transactions root = {transactionsRoot} ≠ expected transactions root = {block.header.txsRoot}"
-  -- if blockStateRoot ≠ block.header.stateRoot then
-  --   .error "InvalidBlock : state root mismatch"
-  -- if receiptRoot ≠ block.header.receiptRoot then
-  --   .error "InvalidBlock : receipt root mismatch"
-  -- if block_logs_bloom ≠ block.header.bloom then
-  --   .error "InvalidBlock : bloom mismatch"
-  -- if withdrawalsRoot ≠ block.header.withdrawalsRoot then
-  --   .error "InvalidBlock : withdrawals root mismatch"
-  -- if bout.blobGasUsed ≠ block.header.blobGasUsed then
-  --   .error "InvalidBlock : blob gas used mismatch"
-  -- if some requestsHash ≠ block.header.requestsHash then
-  --   .error s!"InvalidBlock : expected requests hash = {block.header.requestsHash}, computed requests hash = {requestsHash}"
   .ok {
     state := state
     blocks := (block :: chain.blocks.reverse.take 254).reverse
@@ -4373,7 +4360,7 @@ def addBlockToChain (vb : Bool) (chain : BlockChain) (blockRlp : B8L) :
   if blockRlp ≠ rlp' then do
     .error "ERROR : incorrect block rlp"
   let chain ←
-    match state_transition vb chain block with
+    match stateTransition vb chain block with
     | .error err => return (.inr err)
     | .ok chain => .ok chain
   cprint vb s!"\nSTATE AFTER TRANSITION :"
