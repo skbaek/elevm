@@ -2531,6 +2531,10 @@ def processCreateMessageExecution (evm : Evm) : Execution :=
     then .error ⟨evm, "OutOfGasError"⟩
     else .ok evm
 
+def processCreateMessageExeptionalHalt
+    (evm : Evm) (err : String) (st : State) (tra : Tra) : Evm :=
+  {evm.rollback st tra with gas_left := 0, output := [], error := .some err}
+
 mutual
 
   def executeCode (vb : Bool) (msg : Msg) :
@@ -2613,8 +2617,9 @@ mutual
         | .error (evm, err) =>
           if isExceptionalHalt err
           then
-            let evm := evm.rollback init_state init_tra
-            .ok {evm with gas_left := 0, output := [], error := .some err}
+            -- let evm := evm.rollback init_state init_tra
+            -- .ok {evm with gas_left := 0, output := [], error := .some err}
+            .ok <| processCreateMessageExeptionalHalt evm err init_state init_tra
           else .error ⟨evm.msg.benv, evm.msg.tenv, err⟩
       else .ok <| evm.rollback init_state init_tra
   termination_by lim => lim
