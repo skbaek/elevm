@@ -2514,6 +2514,23 @@ def accessDelegation (evm : Evm) (adr : Adr) :
     ⟨true, adr, code, accessGasCost, evm⟩
   else ⟨false, adr, code, 0, evm⟩
 
+def processCreateMessageBenv (msg : Msg) : Benv :=
+  let adr := msg.currentTarget
+  let benv := msg.benv.setStor adr .empty
+  let benv := add_created_account benv adr
+  benv.incrNonce adr
+
+def processCreateMessageExecution (evm : Evm) : Execution :=
+  let contractCode := evm.output
+  let contractCodeGas := contractCode.length * gasCodeDeposit
+  match contractCode with
+  | 0xEF :: _ => .error ⟨evm, "InvalidContractPrefix"⟩
+  | _ => do
+    let evm ← chargeGas contractCodeGas evm
+    if maxCodeSize < contractCode.length
+    then .error ⟨evm, "OutOfGasError"⟩
+    else .ok evm
+
 mutual
 
   def executeCode (vb : Bool) (msg : Msg) :
@@ -2556,7 +2573,7 @@ mutual
           else .error ⟨evm.msg.benv, evm.msg.tenv, err⟩
   termination_by lim => lim
 
-  def processMsg (vb : Bool) (msg : Msg) :
+  def processMessage (vb : Bool) (msg : Msg) :
     Nat → Except (Benv × Tenv × String) Evm
     | 0 => .error ⟨msg.benv, msg.tenv, "RecursionLimit"⟩
     | lim + 1 => do
@@ -2583,25 +2600,16 @@ mutual
     | lim + 1 => do
       let init_state := msg.benv.state
       let init_tra := msg.tenv.transientStorage
-      let adr := msg.currentTarget
-      let mut benv := msg.benv.setStor adr .empty
-      benv := add_created_account benv adr
-      benv := benv.incrNonce adr
-      let evm ← processMsg vb {msg with benv := benv} lim
+      let evm ←
+        processMessage vb
+          {msg with benv := processCreateMessageBenv msg}
+          lim
       if evm.error.isNone
       then
-        let contractCode := evm.output
-        let contractCodeGas := contractCode.length * gasCodeDeposit
         let result : Execution :=
-          match contractCode with
-          | 0xEF :: _ => .error ⟨evm, "InvalidContractPrefix"⟩
-          | _ => do
-            let evm ← chargeGas contractCodeGas evm
-            if maxCodeSize < contractCode.length
-            then .error ⟨evm, "OutOfGasError"⟩
-            else .ok evm
+          processCreateMessageExecution evm
         match result with
-        | .ok evm => .ok <| evm.setCode adr <| .mk <| .mk contractCode
+        | .ok evm => .ok <| evm.setCode msg.currentTarget ⟨⟨evm.output⟩⟩
         | .error (evm, err) =>
           if isExceptionalHalt err
           then
@@ -2712,7 +2720,7 @@ mutual
         accessedStorageKeys := evm.accessedStorageKeys
         disablePrecompiles := disablePrecompiles
       }
-      let child ← liftToExecution evm <| processMsg vb childMsg lim
+      let child ← liftToExecution evm <| processMessage vb childMsg lim
       evm ←
         if child.error.isSome
         then (incorporateChildOnError evm child child.output).push 0
@@ -3542,7 +3550,7 @@ def processMessageCall (vb : Bool) (msg : Msg) :
           code := benv.state.getCode dca,
           codeAddress := some dca
         }
-    evm ← Except.bimap (Prod.snd ∘ Prod.snd) id <| processMsg vb msg (msg.gas + 50)
+    evm ← Except.bimap (Prod.snd ∘ Prod.snd) id <| processMessage vb msg (msg.gas + 50)
   let mut logs : List Log := []
   let mut accountsToDelete : AdrSet := .emptyWithCapacity
   if evm.error.isNone then
