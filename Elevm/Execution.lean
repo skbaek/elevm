@@ -2520,6 +2520,13 @@ def processCreateMessageBenv (msg : Msg) : Benv :=
   let benv := add_created_account benv adr
   benv.incrNonce adr
 
+def processCreateMessageMsg (msg : Msg) : Msg :=
+  let adr := msg.currentTarget
+  let benv := msg.benv.setStor adr .empty
+  let benv := add_created_account benv adr
+  let benv := benv.incrNonce adr
+  {msg with benv := benv}
+
 def processCreateMessageExecution (evm : Evm) : Execution :=
   let contractCode := evm.output
   let contractCodeGas := contractCode.length * gasCodeDeposit
@@ -2604,10 +2611,7 @@ mutual
     | lim + 1 => do
       let init_state := msg.benv.state
       let init_tra := msg.tenv.transientStorage
-      let evm ←
-        processMessage vb
-          {msg with benv := processCreateMessageBenv msg}
-          lim
+      let evm ← processMessage vb (processCreateMessageMsg msg) lim
       if evm.error.isNone
       then
         let result : Execution :=
@@ -2617,9 +2621,7 @@ mutual
         | .error (evm, err) =>
           if isExceptionalHalt err
           then
-            -- let evm := evm.rollback init_state init_tra
-            -- .ok {evm with gas_left := 0, output := [], error := .some err}
-            .ok <| processCreateMessageExeptionalHalt evm err init_state init_tra
+            .ok (processCreateMessageExeptionalHalt evm err init_state init_tra)
           else .error ⟨evm.msg.benv, evm.msg.tenv, err⟩
       else .ok <| evm.rollback init_state init_tra
   termination_by lim => lim
