@@ -6,7 +6,7 @@ abbrev AccessList : Type := List (Adr × List B256)
 
 instance : ToString AccessList := ⟨@List.toString _ _⟩
 
-abbrev State : Type := Lean.RBMap Adr Acct compare
+abbrev State : Type := Std.TreeMap Adr Acct compare
 
 def State.toStrings (w : State) : List String :=
   let kvs := w.toArray.toList
@@ -422,7 +422,7 @@ def BLT.toB256 : BLT → Option B256
   | _ => none
 
 -- nibbles-to-bytes maps
-abbrev NTB := Lean.RBMap (List B8) (List B8) (@List.compare _ ⟨B8.compareLows⟩)
+abbrev NTB := Std.TreeMap (List B8) (List B8) (@List.compare _ ⟨B8.compareLows⟩)
 
 def NTB.toStrings (s : NTB) : List String :=
   let kvs := s.toArray.toList
@@ -456,7 +456,7 @@ def commonPrefix (n : B8) (ns : B8L) : List B8L → Option B8L
     | [] => none
     | (n' :: ns'') => commonPrefix n' ns'' nss
 
-def NTB.empty : NTB := Lean.RBMap.empty
+def NTB.empty : NTB := Std.TreeMap.empty
 
 def sansPrefix : B8L → B8L → Option B8L
   | [], ns => some ns
@@ -470,7 +470,7 @@ def insertSansPrefix (pfx : B8L) (m : NTB) (ns : B8L) (bs : B8L) : Option NTB :=
 def NTB.factor (m : NTB) : Option (B8L × NTB) := do
   let ((n :: ns) :: nss) ← some (m.toList.map Prod.fst) | none
   let pfx ← commonPrefix n ns nss
-  let m' ← Lean.RBMap.foldM (insertSansPrefix pfx) NTB.empty m
+  let m' ← Std.TreeMap.foldlM (insertSansPrefix pfx) NTB.empty m
   some ⟨pfx, m'⟩
 
 structure NTBs : Type where
@@ -506,7 +506,11 @@ def NTBs.update (js : NTBs) (f : NTB → NTB) (k : B8) : NTBs :=
 
 def NTBs.insert (js : NTBs) : B8L → B8L → NTBs
   | [], _ => js
-  | n :: ns, bs => js.update (Lean.RBMap.insert · ns bs) n
+  | n :: ns, bs => js.update (Std.TreeMap.insert · ns bs) n
+
+def Std.TreeMap.isSingleton {K V : Type} (cmp : K → K → Ordering)
+    (m : Std.TreeMap K V cmp) : Bool :=
+  m.size = 1
 
 mutual
 
@@ -529,16 +533,18 @@ mutual
                 | [(k, v)] => .list [.b8s (hp k 1), .b8s v]
                 | _ => .b8s []            else match j.factor with
                 | none =>
-                  let js := Lean.RBMap.fold NTBs.insert NTBs.empty j
+                  let js := Std.TreeMap.foldl NTBs.insert NTBs.empty j
                   .list [ nodeComp k js.x0, nodeComp k js.x1, nodeComp k js.x2,
                           nodeComp k js.x3, nodeComp k js.x4, nodeComp k js.x5,
                           nodeComp k js.x6, nodeComp k js.x7, nodeComp k js.x8,
                           nodeComp k js.x9, nodeComp k js.xA, nodeComp k js.xB,
                           nodeComp k js.xC, nodeComp k js.xD, nodeComp k js.xE,
-                          nodeComp k js.xF, .b8s (j.findD [] []) ]
+                          nodeComp k js.xF, .b8s (j.getD [] []) ]
                 | some (pfx, j') => .list [.b8s (hp pfx 0), nodeComp k j']
 
 end
+
+#check Std.TreeMap.getElem!_erase
 
 def NTB.maxKeyLength (j : NTB) : Nat :=
   (j.toList.map (List.length ∘ Prod.fst)).maxD 0
@@ -556,7 +562,7 @@ def Stor.toNTB (s : Stor) : NTB :=
       j.insert
         k.keccak.toB4s
         ((BLT.toB8L <| .b8s <| B8L.sig <| v.toB8L))
-  Lean.RBMap.fold f NTB.empty s
+  Std.TreeMap.foldl f NTB.empty s
 
 def B256.zerocount (x : B256) : Nat → Nat
   | 0 => 0
@@ -719,7 +725,7 @@ instance : Hashable (Adr × B256) := ⟨λ x => x.1.low⟩
 abbrev AdrSet : Type := @Std.HashSet Adr _ _
 abbrev KeySet : Type := @Std.HashSet (Adr × B256) _ _
 
-abbrev Tra : Type := Lean.RBMap Adr Stor compare
+abbrev Tra : Type := Std.TreeMap Adr Stor compare
 
 def Sta : Type := Array B256 × Nat
 
@@ -1159,7 +1165,9 @@ def Acct.Erasable (ac : Acct) : Prop :=
 
 instance {ac : Acct} : Decidable ac.Erasable := instDecidableAnd
 
-def State.get (w : State) (a : Adr) : Acct := (w.find? a).getD .empty
+def State.get (w : State) (a : Adr) : Acct :=
+  --w[a]?.getD .empty
+  w.getD a .empty
 
 def State.set (w : State) (a : Adr) (ac : Acct) : State :=
   if ac.Erasable then w.erase a else w.insert a ac
@@ -1206,7 +1214,7 @@ def Evm.getAcct (evm : Evm) (a : Adr) : Acct :=
 def Evm.getBal (evm : Evm) (a : Adr) : B256 := (evm.getAcct a).bal
 def Evm.getCode (evm : Evm) (a : Adr) : ByteArray := (evm.getAcct a).code
 def Evm.getStorVal (evm : Evm) (adr : Adr) (key : B256) : B256 :=
-  (evm.getAcct adr).stor.findD key 0
+  (evm.getAcct adr).stor.getD key 0
 
 def Stor.set (s : Stor) (k v : B256) : Stor :=
   if v = 0 then s.erase k else s.insert k v
@@ -1225,7 +1233,7 @@ def Evm.setStorVal (evm : Evm) (adr : Adr) (key val : B256) : Evm :=
   {evm with msg := evm.msg.setStorVal adr key val}
 
 def Tra.setStorVal (tra : Tra) (adr : Adr) (key val : B256) : Tra :=
-  let stor : Stor := tra.findD adr .empty
+  let stor : Stor := tra.getD adr .empty
   tra.set adr <| stor.set key val
 
 def Tenv.setTransVal (tenv : Tenv) (adr : Adr) (key val : B256) : Tenv :=
@@ -1238,10 +1246,10 @@ def Evm.setTransVal (evm : Evm) (adr : Adr) (key val : B256) : Evm :=
   {evm with msg := evm.msg.setTransVal adr key val}
 
 def Evm.getOrigStorVal (evm : Evm) (adr : Adr) (key : B256) : B256 :=
-  (evm.getOrigAcct adr).stor.findD key 0
+  (evm.getOrigAcct adr).stor.getD key 0
 
 def Evm.getTransVal (evm : Evm) (adr : Adr) (key : B256) : B256 :=
-  (evm.msg.tenv.transientStorage.findD adr .empty).findD key 0
+  (evm.msg.tenv.transientStorage.getD adr .empty).getD key 0
 
 def memExtSize
   (current_size access_index access_size : Nat) : Nat :=
@@ -1295,7 +1303,7 @@ def Mem.read (μ : Mem) (index size : ℕ) : B8L × Mem :=
   ⟨μ.data.sliceD index size 0, μ.extend index size⟩
 
 def Dead (w : State) (a : Adr) : Prop :=
-  match w.find? a with
+  match w[a]? with
   | none => True
   | some x => x.Empty
 
@@ -3037,12 +3045,12 @@ end
 
 instance {w a} : Decidable (Dead w a) := by
   simp [Dead]
-  cases (Lean.RBMap.find? w a)
+  cases w[a]?
   · simp; apply instDecidableTrue
   · simp [Acct.Empty]; apply instDecidableAnd
 
 def State.code (w : State) (a : Adr) : ByteArray :=
-  match w.find? a with
+  match w[a]? with
   | none => ByteArray.mk #[]
   | some x => x.code
 
@@ -3127,7 +3135,7 @@ def toKeyVal' (pr : B8L × B8L) : B8L × B8L :=
 
 def receiptRoot (w : List (B8L × B8L)) : B256 :=
   let keyVals : List (B8L × B8L) := (List.map toKeyVal' w)
-  let finalNTB : NTB := Lean.RBMap.fromList keyVals _
+  let finalNTB : NTB := Std.TreeMap.ofList keyVals _
   trie finalNTB
 
 def addIndexToBloom (hash : B8L) (index : Nat) (bloom : B8L) : B8L :=
@@ -3602,11 +3610,11 @@ structure Receipt : Type where
 
 structure BlockOutput : Type where
   blockGasUsed : Nat
-  transactionsTrie : Lean.RBMap B8L Tx compare
-  receiptsTrie : Lean.RBMap B8L (Fin 5 × Receipt) compare
+  transactionsTrie : Std.TreeMap B8L Tx compare
+  receiptsTrie : Std.TreeMap B8L (Fin 5 × Receipt) compare
   receiptKeys : List B8L
   blockLogs : List Log
-  withdrawalsTrie : Lean.RBMap B8L Withdrawal compare
+  withdrawalsTrie : Std.TreeMap B8L Withdrawal compare
   blobGasUsed : Nat
   requests : List B8L
 
@@ -3832,7 +3840,7 @@ def BlockOutput.init : BlockOutput :=
 def processTransaction
   (vb : Bool) (benv: Benv) (bout : BlockOutput)
   (tx: Tx) (index : Nat) : Except String (State × BlockOutput) := do
-  let transactionsTrie : Lean.RBMap B8L Tx compare :=
+  let transactionsTrie : Std.TreeMap B8L Tx compare :=
     bout.transactionsTrie.insert (BLT.b8s index.toB8L).toB8L tx
   let bout := {bout with transactionsTrie := transactionsTrie}
   let ⟨intrinsicGas, calldataFloorGasCost⟩ ← validateTransaction tx
@@ -3907,7 +3915,7 @@ def processTransaction
 -- def process_withdrawal
 def processWithdrawals
   (benv : Benv) (bout : BlockOutput) (wds : List Withdrawal) : State × BlockOutput :=
-  let trie : Lean.RBMap B8L Withdrawal compare :=
+  let trie : Std.TreeMap B8L Withdrawal compare :=
     List.foldl (λ acc ⟨i, wd⟩ =>
       acc.insert (BLT.toB8L <| .b8s i.toB8L) wd) bout.withdrawalsTrie wds.putIndex
   let state :=
@@ -4097,7 +4105,7 @@ def parseDepositRequests
   let mut depositRequests : B8L := []
   for key in bout.receiptKeys do
     let ⟨_, receipt⟩  ←
-      (bout.receiptsTrie.find? key).toExcept "ERROR : receipt not found"
+      bout.receiptsTrie[key]?.toExcept "ERROR : receipt not found"
     for log in receipt.logs do
       if (
         log.address = depositContractAddress ∧
@@ -4199,7 +4207,7 @@ def computeRequestsHash (requests : List B8L) : B256 :=
 
 def State.root (w : State) : B256 :=
   let keyVals := (List.map toKeyVal w.toList)
-  let finalNTB : NTB := Lean.RBMap.fromList keyVals _
+  let finalNTB : NTB := Std.TreeMap.ofList keyVals _
   trie finalNTB
 
 def stateTransitionChecks (bout : BlockOutput) (header : Header)
@@ -4250,17 +4258,17 @@ def getTransactionsRoot (bout : BlockOutput) : B256 :=
       | .three _ _ _ _ _ _ _ => [0x03]
       | .four _ _ _ _ _ _ => [0x04]
     ⟨arg.fst.toB4s, txPrefix ++ arg.snd.toBLT.toB8L⟩
-  trie <| Lean.RBMap.fromList (List.map aux bout.transactionsTrie.toList) _
+  trie <| Std.TreeMap.ofList (List.map aux bout.transactionsTrie.toList) _
 
 def getReceiptRoot (bout : BlockOutput) : B256 :=
   let aux : (B8L × Fin 5 × Receipt) → (B8L × B8L)
     | ⟨key, type, receipt⟩ => ⟨key.toB4s, type.val.toB8L ++ receipt.toBLT.toB8L⟩
-  trie <| Lean.RBMap.fromList (List.map aux bout.receiptsTrie.toList) _
+  trie <| Std.TreeMap.ofList (List.map aux bout.receiptsTrie.toList) _
 
 def getWithdrawalsRoot (bout : BlockOutput) : B256 :=
   let aux (arg : B8L × Withdrawal) : B8L × B8L :=
     ⟨arg.fst.toB4s, arg.snd.toBLT.toB8L⟩
-  trie <| Lean.RBMap.fromList (List.map aux bout.withdrawalsTrie.toList) _
+  trie <| Std.TreeMap.ofList (List.map aux bout.withdrawalsTrie.toList) _
 
 def stateTransitionOmmersCheck (ommers : List Header) : Except String Unit := do
   if ¬ommers.isEmpty then do

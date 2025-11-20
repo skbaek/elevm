@@ -9,9 +9,7 @@ def Lean.Json.toIoList : Lean.Json → IO (List Json)
   | _ => IO.throw "not an array"
 
 def Lean.Json.toIoRBNode :
-  Lean.Json →
-    -- IO (RBNode String (λ _ => Json))
-    IO (Std.TreeMap.Raw String Json compare)
+  Lean.Json → IO (Std.TreeMap.Raw String Json compare)
   | .obj r => return r
   | _ => IO.throw "not an object"
 
@@ -68,7 +66,7 @@ def Lean.Json.toAcct : Lean.Json → IO Acct
     let nonce ← Lean.Json.toIoB64P nonce_json
     let code ← Lean.Json.toIoB8L code_json
     let stor ← List.mapM aux stor_json.toArray.toList
-    return ⟨nonce, bal, Lean.RBMap.fromList stor _, code.toByteArray⟩
+    return ⟨nonce, bal, Std.TreeMap.ofList stor _, code.toByteArray⟩
   | _ => .throw "cannot parse account (not .obj)"
 
 def Lean.Json.toWorld (j : Lean.Json) : IO State := do

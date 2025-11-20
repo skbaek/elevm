@@ -1,6 +1,7 @@
 -- Types.lean : types used by both executable and abstract semantics of EVM and Blanc.
 
 import Elevm.Basic
+import Std.Data.TreeMap.Lemmas
 
 structure Adr : Type where
   (high : B32)
@@ -128,7 +129,7 @@ def String.dropZeroes (s : String) : String :=
   | "" => "0"
   | s => s
 
-abbrev Stor := Lean.RBMap B256 B256 compare
+abbrev Stor := Std.TreeMap B256 B256 compare
 
 def Stor.toStrings (s : Stor) : List String :=
   let kvs := s.toArray.toList
