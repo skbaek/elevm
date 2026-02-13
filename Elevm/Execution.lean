@@ -950,11 +950,11 @@ abbrev Adr.isPrecomp (a : Adr) : Prop :=
 def safeSub {ξ} [Sub ξ] [LE ξ] [DecidableLE ξ] (x y : ξ) : Option ξ :=
   if y ≤ x then some (x - y) else none
 
-abbrev Execution : Type := Except (Evm × String) Evm
+abbrev Execution : Type := Except (String × Evm) Evm
 
 def chargeGas (cost : Nat) (evm : Evm) : Execution := do
   match safeSub evm.gas_left cost with
-  | none => .error ⟨evm, "OutOfGasError"⟩
+  | none => .error ⟨"OutOfGasError", evm⟩
   | some gas => .ok {evm with gas_left := gas}
 
 inductive Ninst : Type
@@ -1009,62 +1009,6 @@ def Evm.getInst (evm : Evm) : Option Inst :=
   else
     some (.last .stop)
 
--- def Evm.getInst (evm : Evm) : Option Inst :=
---   let aux (code : ByteArray) (pc len off : Nat) : B8 :=
---     if off < len
---     then code.get! ((pc + len) - off)
---     else 0
---   if evm.pc < evm.code.size
---   then
---     let b : B8 := evm.code.get! evm.pc
---     (b.toRinst <&> (.next ∘ .reg)) <|>
---     (b.toXinst <&> (.next ∘ .exec)) <|>
---     (b.toJinst <&> .jump) <|>
---     (b.toLinst <&> .last) <|>
---     (
---       let bn := b.toNat
---       if 95 ≤ bn ∧ bn ≤ 127
---       then let len := bn - 95
---            let x : B256 :=
---              B8s.toB256
---                (aux evm.code evm.pc len 31)
---                (aux evm.code evm.pc len 30)
---                (aux evm.code evm.pc len 29)
---                (aux evm.code evm.pc len 28)
---                (aux evm.code evm.pc len 27)
---                (aux evm.code evm.pc len 26)
---                (aux evm.code evm.pc len 25)
---                (aux evm.code evm.pc len 24)
---                (aux evm.code evm.pc len 23)
---                (aux evm.code evm.pc len 22)
---                (aux evm.code evm.pc len 21)
---                (aux evm.code evm.pc len 20)
---                (aux evm.code evm.pc len 19)
---                (aux evm.code evm.pc len 18)
---                (aux evm.code evm.pc len 17)
---                (aux evm.code evm.pc len 16)
---                (aux evm.code evm.pc len 15)
---                (aux evm.code evm.pc len 14)
---                (aux evm.code evm.pc len 13)
---                (aux evm.code evm.pc len 12)
---                (aux evm.code evm.pc len 11)
---                (aux evm.code evm.pc len 10)
---                (aux evm.code evm.pc len  9)
---                (aux evm.code evm.pc len  8)
---                (aux evm.code evm.pc len  7)
---                (aux evm.code evm.pc len  6)
---                (aux evm.code evm.pc len  5)
---                (aux evm.code evm.pc len  4)
---                (aux evm.code evm.pc len  3)
---                (aux evm.code evm.pc len  2)
---                (aux evm.code evm.pc len  1)
---                (aux evm.code evm.pc len  0)
---            some (.next <| .push x len)
---       else none
---     )
---   else
---     some (.last .stop)
-
 def fakeExpAux (num den i : Nat) : Nat → Nat → Nat
   | _, 0 => panic! "error : recursion limit reached for fake exponentiation"
   | 0, _ => 0
@@ -1084,21 +1028,21 @@ def calculate_blob_gas_price (excessBlobGas : Nat) : Nat :=
 def Evm.push (x : B256) (evm : Evm) : Execution := do
   .assert
     (evm.stack.length < 1024)
-    ⟨evm, "StackOverflowError"⟩
+    ⟨"StackOverflowError", evm⟩
   .ok {evm with stack := x :: evm.stack}
 
-def Evm.pop (evm : Evm) : Except (Evm × String) (B256 × Evm) := do
+def Evm.pop (evm : Evm) : Except (String × Evm) (B256 × Evm) := do
   match evm.stack with
-  | [] => .error ⟨evm, "StackUnderflowError"⟩
+  | [] => .error ⟨"StackUnderflowError", evm⟩
   | x :: xs => .ok ⟨x, {evm with stack := xs}⟩
 
 def Prod.mapFst {α₁ : Type u₁} {α₂ : Type u₂} {β : Type v} (f : α₁ → α₂) : α₁ × β → α₂ × β :=
   Prod.map f id
 
-def Evm.popToNat (evm : Evm) : Except (Evm × String) (Nat × Evm) :=
+def Evm.popToNat (evm : Evm) : Except (String × Evm) (Nat × Evm) :=
   evm.pop <&> Prod.mapFst B256.toNat
 
-def Evm.popN (evm : Evm) : Nat → Except (Evm × String) (List B256 × Evm)
+def Evm.popN (evm : Evm) : Nat → Except (String × Evm) (List B256 × Evm)
   | 0 => .ok ⟨[], evm⟩
   | n + 1 => do
     let ⟨x, evm⟩ ← evm.pop
@@ -1327,8 +1271,8 @@ def List.swap : List ξ → Nat → Option (List ξ)
 
 def Evm.contract (evm : Evm) : Adr := evm.msg.currentTarget
 
-def Evm.assertDynamic (evm : Evm) : Except (Evm × String) Unit :=
-  Except.assert (!evm.msg.isStatic) ⟨evm, s!"WriteInStaticContext"⟩
+def Evm.assertDynamic (evm : Evm) : Except (String × Evm) Unit :=
+  Except.assert (!evm.msg.isStatic) ⟨s!"WriteInStaticContext", evm⟩
 
 def Rinst.run (evm : Evm) : Rinst → Execution
   | .address => pushItem evm.contract.toB256 gBase evm
@@ -1427,7 +1371,7 @@ def Rinst.run (evm : Evm) : Rinst → Execution
     let evm ← chargeGas (gVerylow + copy_gas_cost + extend_memory_cost) evm
 
     if (evm.return_data.length < return_data_start_index + size) then
-      .error ⟨evm, "OutOfBoundsRead"⟩
+      .error ⟨"OutOfBoundsRead", evm⟩
 
     let value :=
       evm.return_data.sliceD return_data_start_index size 0
@@ -1523,7 +1467,7 @@ def Rinst.run (evm : Evm) : Rinst → Execution
   | .swap n => do
     let evm ← chargeGas gVerylow evm
     match List.swap evm.stack n with
-    | none => .error ⟨evm, "StackUnderflowError"⟩
+    | none => .error ⟨"StackUnderflowError", evm⟩
     | some stack =>
       .ok {
         evm with
@@ -1533,7 +1477,7 @@ def Rinst.run (evm : Evm) : Rinst → Execution
   | .dup n => do
     let evm ← chargeGas gVerylow evm
     match evm.stack[n]? with
-    | none => .error ⟨evm, "StackUnderflowError"⟩
+    | none => .error ⟨"StackUnderflowError", evm⟩
     | some word => evm.push word >>= Evm.incrPc
   | .sload => do
     let ⟨key, evm⟩ ← evm.pop
@@ -1555,7 +1499,7 @@ def Rinst.run (evm : Evm) : Rinst → Execution
     let mut evm : Evm := evm
     .assert
       (gCallStipend < evm.gas_left)
-      ⟨evm, "OutOfGasError"⟩
+      ⟨"OutOfGasError", evm⟩
     let ct := evm.contract
     let original_value := evm.getOrigStorVal ct key
     let current_value := evm.getStorVal ct key
@@ -1738,7 +1682,7 @@ def Jinst.run (evm : Evm) : Jinst → Execution
     let evm ← chargeGas gMid evm
     .assert
       (jumpable evm.code jump_dest.toNat)
-      ⟨evm, "InvalidJumpDestError"⟩
+      ⟨"InvalidJumpDestError", evm⟩
     .ok {evm with pc := jump_dest.toNat}
   | .jumpi => do
     let ⟨dest, evm⟩ ← evm.pop
@@ -1750,7 +1694,7 @@ def Jinst.run (evm : Evm) : Jinst → Execution
       else
         .assert
           (jumpable evm.code dest.toNat)
-          ⟨evm, "InvalidJumpDestError"⟩
+          ⟨"InvalidJumpDestError", evm⟩
         .ok dest.toNat
     .ok {evm with pc := pc}
 
@@ -1814,7 +1758,7 @@ def Linst.run (evm : Evm) : Linst → Execution
     let evm ← chargeGas extend_memory_cost evm
     let ⟨output, evm⟩ := evm.memRead memory_start_index size
     let evm := {evm with output := output}
-    .error ⟨evm, "Revert"⟩
+    .error ⟨"Revert", evm⟩
   | .ret => do
     let ⟨index, evm⟩ ← evm.popToNat
     let ⟨size, evm⟩ ← evm.popToNat
@@ -1838,7 +1782,7 @@ def Linst.run (evm : Evm) : Linst → Execution
     evm.assertDynamic
     evm ←
       (evm.subBal donor donorBal).toExcept
-        ⟨evm, "ERROR : InsufficientBalanceError"⟩
+        ⟨"ERROR : InsufficientBalanceError", evm⟩
     evm := evm.addBal donee donorBal
     if donor ∈ evm.msg.benv.createdAccounts
       then evm := add_account_to_delete (evm.setBal donor 0) donor
@@ -1953,9 +1897,9 @@ def Evm.rollback (evm : Evm) (wor : State) (tra : Tra) : Evm :=
   }
 
 def liftToExecution (evm : Evm)
-  (f : Except (Benv × Tenv × String) Evm) : Execution := do
+  (f : Except (String × Benv × Tenv) Evm) : Execution := do
   match f with
-  | .error ⟨benv, tenv, err⟩ =>
+  | .error ⟨err, benv, tenv⟩ =>
     let evm' := {
       evm with
       msg := {
@@ -1964,7 +1908,7 @@ def liftToExecution (evm : Evm)
         tenv := tenv
       }
     }
-    .error ⟨evm', err⟩
+    .error ⟨err, evm'⟩
   | .ok evm => .ok evm
 
 def executeEcrecover (evm : Evm) : Execution := do
@@ -2080,10 +2024,10 @@ def executeEcadd (evm : Evm) : Execution := do
   .assert
     ( x0 < altBn128Prime ∧ y0 < altBn128Prime ∧
       x1 < altBn128Prime ∧ x1 < altBn128Prime )
-    ⟨evm, "OutOfGasError"⟩
+    ⟨"OutOfGasError", evm⟩
 
-  let p0 ← (BNP.mk? x0 y0).toExcept ⟨evm, "OutOfGasError"⟩
-  let p1 ← (BNP.mk? x1 y1).toExcept ⟨evm, "OutOfGasError"⟩
+  let p0 ← (BNP.mk? x0 y0).toExcept ⟨"OutOfGasError", evm⟩
+  let p1 ← (BNP.mk? x1 y1).toExcept ⟨"OutOfGasError", evm⟩
 
   .ok {evm with output := BNP.toB8L (p0 + p1)}
 
@@ -2096,8 +2040,8 @@ def executeEcmul (evm : Evm) : Execution := do
 
   .assert
     (x < altBn128Prime ∧ y < altBn128Prime)
-    ⟨evm, "OutOfGasError"⟩
-  let p ← (BNP.mk? x y).toExcept ⟨evm, "OutOfGasError"⟩
+    ⟨"OutOfGasError", evm⟩
+  let p ← (BNP.mk? x y).toExcept ⟨"OutOfGasError", evm⟩
 
   .ok {evm with output := BNP.toB8L (p * n)}
 
@@ -2268,21 +2212,21 @@ def bCompress (numRounds : Nat)
 -- blake2f
 def executeBlake2F (evm : Evm) : Execution := do
   let data := evm.msg.data
-  .assert (data.length = 213) ⟨evm, "InvalidParameter"⟩
+  .assert (data.length = 213) ⟨"InvalidParameter", evm⟩
   let ⟨rounds, h, m, t0, t1, fn⟩ := getBlake2Parameters data
   let evm ← chargeGas (gasBlake2PerRound * rounds) evm
   let f ←
     match fn with
     | 0 => .ok false
     | 1 => .ok true
-    | _ => .error ⟨evm, "InvalidParameter"⟩
-  let output ← (bCompress rounds h m t0 t1 f).toExcept ⟨evm, "bCompress failed"⟩
+    | _ => .error ⟨"InvalidParameter", evm⟩
+  let output ← (bCompress rounds h m t0 t1 f).toExcept ⟨"bCompress failed", evm⟩
   .ok {evm with output := output}
 
 def executePointEval (evm : Evm) : Execution := do
   let data := evm.msg.data
-  .assert (data.length = 192) ⟨evm, "KZGProofError"⟩
-  .error ⟨evm, "UNIMP : executePointEval"⟩
+  .assert (data.length = 192) ⟨"KZGProofError", evm⟩
+  .error ⟨"UNIMP : executePointEval", evm⟩
 
 def gasBlsG1Mul : Nat := 12000
 def gasBlsG1Map : Nat := 5500
@@ -2293,67 +2237,67 @@ def gasBlsG2Map : Nat := 23800
 -- bls12_g1_add
 def executeBls12G1Add (evm : Evm) : Execution := do
   let data := evm.msg.data
-  .assert (data.length = 256) ⟨evm, "InvalidParameter"⟩
-  .error ⟨evm, "BLS12 G1 Add not implemented yet"⟩
+  .assert (data.length = 256) ⟨"InvalidParameter", evm⟩
+  .error ⟨"BLS12 G1 Add not implemented yet", evm⟩
 
 -- bls12_g1_msm
 def executeBls12G1Msm (evm : Evm) : Execution := do
   let data := evm.msg.data
   if data.length = 0 ∨ data.length % lengthPerPair ≠ 0 then
-    .error ⟨evm, s!"InvalidParameter : {data.length} is not a valid input lnegth"⟩
+    .error ⟨s!"InvalidParameter : {data.length} is not a valid input lnegth", evm⟩
   let k := data.length / lengthPerPair
   let discount :=
     List.getD g1KDiscount (k - 1) g1MaxDiscount
   let gasCost := (k * gasBlsG1Mul * discount) / 1000
   let mut evm ← chargeGas gasCost evm
-  .error ⟨evm, "BLS12 G1 msm not implemented yet"⟩
+  .error ⟨"BLS12 G1 msm not implemented yet", evm⟩
 
 -- bls12_g2_add
 def executeBls12G2Add (evm : Evm) : Execution := do
   let data := evm.msg.data
   if data.length ≠ 512 then
-    .error ⟨evm, "InvalidParameter"⟩
+    .error ⟨"InvalidParameter", evm⟩
   let mut evm ← chargeGas gasBlsG2Add evm
-  .error ⟨evm, "BLS12 G2 add not implemented yet"⟩
+  .error ⟨"BLS12 G2 add not implemented yet", evm⟩
 
 -- def bls12_g2_msm
 def executeBls12G2Msm (evm : Evm) : Execution := do
   let data := evm.msg.data
   if data.length = 0 ∨ data.length % lengthPerPair ≠ 0 then
-    .error ⟨evm, s!"InvalidParameter : {data.length} is not a valid input lnegth"⟩
+    .error ⟨s!"InvalidParameter : {data.length} is not a valid input lnegth", evm⟩
   let k := data.length / lengthPerPair
   let discount :=
     List.getD g2KDiscount (k - 1) g2MaxDiscount
   let gasCost := (k * gasBlsG2Mul * discount) / 1000
   let mut evm ← chargeGas gasCost evm
-  .error ⟨evm, "BLS12 G2 msm not implemented yet"⟩
+  .error ⟨"BLS12 G2 msm not implemented yet", evm⟩
 
 -- def bls12_pairing(evm: Evm) -> None:
 def executeBls12Pairing (evm : Evm) : Execution := do
   let data := evm.msg.data
   if data.length = 0 ∨ data.length % 384 ≠ 0 then
-    .error ⟨evm, s!"InvalidParameter : {data.length} is not a valid input lnegth"⟩
+    .error ⟨s!"InvalidParameter : {data.length} is not a valid input lnegth", evm⟩
   let k := data.length / 384
   let gasCost := (32600 * k + 37700)
   let mut evm ← chargeGas gasCost evm
-  .error ⟨evm, "BLS12 pairing not implemented yet"⟩
+  .error ⟨"BLS12 pairing not implemented yet", evm⟩
 
 -- def bls12_map_fp_to_g1(evm: Evm) -> None:
 def executeBls12MapFpToG1 (evm : Evm) : Execution := do
   let data := evm.msg.data
   if data.length ≠ 64 then
-    .error ⟨evm, "InvalidParameter"⟩
+    .error ⟨"InvalidParameter", evm⟩
   let mut evm ← chargeGas gasBlsG1Map evm
-  .error ⟨evm, "BLS12 map FP-to-G1 Msm not implemented yet"⟩
+  .error ⟨"BLS12 map FP-to-G1 Msm not implemented yet", evm⟩
 
 def catchWithOOG {ξ : Type U} (evm : Evm) (cond : String → Bool) :
-  Except String ξ → Except (Evm × String) ξ
+  Except String ξ → Except (String × Evm) ξ
   | .ok v => .ok v
   | .error e =>
     if cond e then
-      .error ⟨evm, "OutOfGasError"⟩
+      .error ⟨"OutOfGasError", evm⟩
     else
-      .error ⟨evm, e⟩
+      .error ⟨e, evm⟩
 
 -- def bytes_to_g1(data: Bytes) -> Point3D[FQ]:
 def B8L.toExStrBNP (data : B8L) : Except String BNP := do
@@ -2389,14 +2333,14 @@ def B8L.toExStrBNP2 (data : B8L) : Except String BNP2 := do
 -- def bls12_map_fp2_to_g2(evm: Evm) -> None:
 def executeBls12MapFp2ToG2 (evm : Evm) : Execution := do
   let data := evm.msg.data
-  .assert (data.length = 128) ⟨evm, "InvalidParameter"⟩
+  .assert (data.length = 128) ⟨"InvalidParameter", evm⟩
   let mut evm ← chargeGas gasBlsG2Map evm
-  .error ⟨evm, "main logic of BLS12 map FP2-to_G2 not implemented yet"⟩
+  .error ⟨"main logic of BLS12 map FP2-to_G2 not implemented yet", evm⟩
 
 def executePairingCheck (evm : Evm) : Execution := do
   let data := evm.msg.data
   let evm ← chargeGas ((34000 * (data.length / 192)) + 45000) evm
-  .assert (data.length % 192 = 0) ⟨evm, "OutOfGasError"⟩
+  .assert (data.length % 192 = 0) ⟨"OutOfGasError", evm⟩
   let mut result : BNF12 := 1
   for i in List.range (data.length / 192) do
     let p : BNP ←
@@ -2405,9 +2349,9 @@ def executePairingCheck (evm : Evm) : Execution := do
     let q : BNP2 ←
       catchWithOOG evm (hasErrorType · "InvalidParameter") <|
         B8L.toExStrBNP2 (data.slice! (i * 192 + 64) 128)
-    .assert (p * altBn128CurveOrder = ⟨0, 0⟩) ⟨evm, "OutOfGasError"⟩
-    .assert (q * altBn128CurveOrder = ⟨0, 0⟩) ⟨evm, "OutOfGasError"⟩
-    let pairResult ← (pairing q p).toExcept ⟨evm, "ValueError"⟩
+    .assert (p * altBn128CurveOrder = ⟨0, 0⟩) ⟨"OutOfGasError", evm⟩
+    .assert (q * altBn128CurveOrder = ⟨0, 0⟩) ⟨"OutOfGasError", evm⟩
+    let pairResult ← (pairing q p).toExcept ⟨"ValueError", evm⟩
     result := result * pairResult
   let output : B8L :=
     if result = 1
@@ -2433,7 +2377,7 @@ def executePrecomp (evm : Evm) : Adr → Execution
   | 0xF => executeBls12Pairing evm
   | 0x10 => executeBls12MapFpToG1 evm
   | 0x11 => executeBls12MapFp2ToG2 evm
-  | n => .error ⟨evm, s!"ERROR : precompiled contract {n} does not exist"⟩
+  | n => .error ⟨s!"ERROR : precompiled contract {n} does not exist", evm⟩
 
 def Inst.toOpString : Inst → String
   | .next n => n.toOpString
@@ -2524,11 +2468,11 @@ def processCreateMessage.chargeCodeGas (evm : Evm) : Execution :=
   let contractCode := evm.output
   let contractCodeGas := contractCode.length * gasCodeDeposit
   match contractCode with
-  | 0xEF :: _ => .error ⟨evm, "InvalidContractPrefix"⟩
+  | 0xEF :: _ => .error ⟨"InvalidContractPrefix", evm⟩
   | _ => do
     let evm ← chargeGas contractCodeGas evm
     if maxCodeSize < contractCode.length
-    then .error ⟨evm, "OutOfGasError"⟩
+    then .error ⟨"OutOfGasError", evm⟩
     else .ok evm
 
 def processCreateMessage.exceptionalHalt
@@ -2554,55 +2498,31 @@ def initEvm (msg : Msg) : Evm :=
   }
 
 def Msg.benvAfterTransfer (msg : Msg) :
-    Except (Benv × Tenv × String) Benv :=
+    Except (String × Benv × Tenv) Benv :=
   if msg.shouldTransferValue then do
     let benv ←
       (msg.benv.subBal msg.caller msg.value).toExcept
-        ⟨msg.benv, msg.tenv, "AssertionError"⟩
+        ⟨"AssertionError", msg.benv, msg.tenv⟩
     .ok <| benv.addBal msg.currentTarget msg.value
   else
     .ok msg.benv
 
 def executeCode.handleError :
-    Execution → Except (Benv × Tenv × String) Evm
+    Execution → Except (String × Benv × Tenv) Evm
   | .ok evm => .ok evm
-  | .error ⟨evm, err⟩ =>
+  | .error ⟨err, evm⟩ =>
     if isExceptionalHalt err
     then .ok {evm with gas_left := 0, output := [], error := some err}
     else
       if err = "Revert"
       then .ok {evm with error := some "Revert"}
-      else .error ⟨evm.msg.benv, evm.msg.tenv, err⟩
+      else .error ⟨err, evm.msg.benv, evm.msg.tenv⟩
 
 mutual
 
-  -- def executeCode (vb : Bool) (msg : Msg) :
-  --   Nat → Except (Benv × Tenv × String) Evm
-  --   | 0 => .error ⟨msg.benv, msg.tenv, "RecursionLimit"⟩
-  --   | lim + 1 => do
-  --     let evm : Evm := initEvm msg
-  --     let ex : Execution :=
-  --       match msg.codeAddress with
-  --       | .none => exec vb lim evm
-  --       | .some adr =>
-  --         if adr.isPrecomp then
-  --           executePrecomp evm adr
-  --         else
-  --           exec vb lim evm
-  --     match ex with
-  --     | .ok evm => .ok evm
-  --     | .error ⟨evm, err⟩ =>
-  --       if isExceptionalHalt err
-  --       then .ok {evm with gas_left := 0, output := [], error := some err}
-  --       else
-  --         if err = "Revert"
-  --         then .ok {evm with error := some "Revert"}
-  --         else .error ⟨evm.msg.benv, evm.msg.tenv, err⟩
-  -- termination_by lim => lim
-
   def executeCode (vb : Bool) (msg : Msg) :
-    Nat → Except (Benv × Tenv × String) Evm
-    | 0 => .error ⟨msg.benv, msg.tenv, "RecursionLimit"⟩
+    Nat → Except (String × Benv × Tenv) Evm
+    | 0 => .error ⟨ "RecursionLimit", msg.benv, msg.tenv⟩
     | lim + 1 => do
       let evm : Evm := initEvm msg
       match msg.codeAddress with
@@ -2617,12 +2537,12 @@ mutual
   termination_by lim => lim
 
   def processMessage (vb : Bool) (msg : Msg) :
-    Nat → Except (Benv × Tenv × String) Evm
-    | 0 => .error ⟨msg.benv, msg.tenv, "RecursionLimit"⟩
+    Nat → Except (String × Benv × Tenv) Evm
+    | 0 => .error ⟨"RecursionLimit", msg.benv, msg.tenv⟩
     | lim + 1 => do
       .assert
         (msg.depth ≤ 1024)
-        ⟨msg.benv, msg.tenv, "StackDepthLimitError"⟩
+        ⟨"StackDepthLimitError", msg.benv, msg.tenv⟩
       let benv ← msg.benvAfterTransfer
       let evm ← executeCode vb (msg.withBenv benv) lim
       if evm.error.isSome then
@@ -2632,21 +2552,21 @@ mutual
   termination_by lim => lim
 
   def processCreateMessage (vb : Bool) (msg : Msg) :
-    Nat → Except (Benv × Tenv × String) Evm
-    | 0 => .error ⟨msg.benv, msg.tenv, "RecursionLimit"⟩
+    Nat → Except (String × Benv × Tenv) Evm
+    | 0 => .error ⟨"RecursionLimit", msg.benv, msg.tenv⟩
     | lim + 1 => do
       let evm ← processMessage vb (processCreateMessage.msg msg) lim
       if evm.error.isNone then
         match processCreateMessage.chargeCodeGas evm with
         | .ok evm => .ok <| evm.setCode msg.currentTarget ⟨⟨evm.output⟩⟩
-        | .error (evm, err) =>
+        | .error ⟨err, evm⟩ =>
           if isExceptionalHalt err
           then
             .ok <|
               processCreateMessage.exceptionalHalt evm err
                 msg.benv.state
                 msg.tenv.transientStorage
-          else .error ⟨evm.msg.benv, evm.msg.tenv, err⟩
+          else .error ⟨err, evm.msg.benv, evm.msg.tenv⟩
       else
         .ok <| evm.rollback msg.benv.state msg.tenv.transientStorage
   termination_by lim => lim
@@ -2658,12 +2578,12 @@ mutual
     (newAddress : Adr)
     (memoryIndex : Nat)
     (memorySize : Nat) : Nat → Execution
-    | 0 => .error ⟨evm, "RecursionLimit"⟩
+    | 0 => .error ⟨"RecursionLimit", evm⟩
     | lim + 1 => do
       let calldata ← .ok <| evm.memory.data.sliceD memoryIndex memorySize 0
       .assert
         (memorySize ≤ maxInitcodeSize)
-        ⟨evm, "OutOfGasError"⟩
+        ⟨"OutOfGasError", evm⟩
       let evm1 ← .ok <| addAccessedAddress evm newAddress
       let createMsgGas ← .ok <| except64th evm1.gas_left
       let evm2 ← .ok <| {evm1 with gas_left := evm1.gas_left - createMsgGas}
@@ -2719,7 +2639,7 @@ mutual
     (output_size:  Nat)
     (code : ByteArray)
     (disablePrecompiles: Bool) : Nat → Execution
-    | 0 => .error ⟨evm, "RecursionLimit"⟩
+    | 0 => .error ⟨"RecursionLimit", evm⟩
     | lim + 1 => do
       let evm1 ← .ok {evm with return_data := []}
       if (evm1.msg.depth + 1 > 1024) then
@@ -2758,7 +2678,7 @@ mutual
       let evm2 ← evm1.push xs.toB256
       .ok {evm2 with pc := evm2.pc + xs.length + 1}
     | .reg r, _ => r.run evm
-    | .exec _, 0 => .error ⟨evm, "RecursionLimit"⟩
+    | .exec _, 0 => .error ⟨"RecursionLimit", evm⟩
     | .exec .create, lim + 1 => do
       let ⟨endowment, evm1⟩ ← evm.pop
       let ⟨memoryIndex, evm2⟩ ← evm1.popToNat
@@ -2839,7 +2759,7 @@ mutual
           extendCost
           (accessCost + createCost + transferCost)
       let evm10 ← chargeGas (msgCallCost + extendCost) evm9
-      .assert (!evm10.msg.isStatic ∨ value = 0) ⟨evm10, "WriteInStaticContext"⟩
+      .assert (!evm10.msg.isStatic ∨ value = 0) ⟨"WriteInStaticContext", evm10⟩
       let evm11 ← .ok <|
         evm10.memExtends
           [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
@@ -3018,11 +2938,11 @@ mutual
 
   def exec : Bool → Nat → Evm → Execution
     | _, 0, evm =>
-      .error ⟨evm, "RecursionLimit"⟩
+      .error ⟨"RecursionLimit", evm⟩
     | vb, lim + 1, evm => do
       -- let mut evm := evm
       -- showLim lim evm
-      let i ← (evm.getInst).toExcept ⟨evm, "InvalidOpcode"⟩
+      let i ← (evm.getInst).toExcept ⟨"InvalidOpcode", evm⟩
       -- showStep vb evm i
       match i with
       | .next n =>
@@ -3537,7 +3457,7 @@ def processMessageCall.create (vb : Bool) (msg : Msg) :
   if isCollision then
     return ⟨benv.state, ⟨0, 0, [], .emptyWithCapacity, "AddressCollision", []⟩⟩
   else
-    let evm ← Except.bimap (Prod.snd ∘ Prod.snd) id <| processCreateMessage vb msg (msg.gas + 50)
+    let evm ← Except.bimap Prod.fst id <| processCreateMessage vb msg (msg.gas + 50)
     let logs := if evm.error.isNone then evm.logs else []
     let accountsToDelete := if evm.error.isNone then evm.accountsToDelete else .emptyWithCapacity
     let refundCounter ←
@@ -3576,7 +3496,7 @@ def processMessageCall.call (vb : Bool) (msg : Msg) :
         code := msg.benv.state.getCode dca,
         codeAddress := some dca
       }
-  let evm ← Except.bimap (Prod.snd ∘ Prod.snd) id <| processMessage vb msgPc (msgPc.gas + 50)
+  let evm ← Except.bimap Prod.fst id <| processMessage vb msgPc (msgPc.gas + 50)
   let refundProcessMessage ←
     if evm.error.isNone then
       (Int.toNat? evm.refund_counter).toExcept "ERROR : refund counter is negative"
@@ -3602,58 +3522,6 @@ def processMessageCall (vb : Bool) (msg : Msg) :
     processMessageCall.create vb msg
   else
     processMessageCall.call vb msg
-
-/-
-def processMessageCall (vb : Bool) (msg : Msg) :
-  Except String (State × MsgCallOutput) := do
-  let benv := msg.benv
-  let mut msg : Msg := msg
-  let mut refundCounter : Nat := 0
-  let mut evm : Evm := default
-  if msg.target.isNone then
-    let isCollision : Bool :=
-      accountHasCodeOrNonce benv.state msg.currentTarget || accountHasStorage benv.state msg.currentTarget
-    if isCollision then
-      return ⟨benv.state, ⟨0, 0, [], .emptyWithCapacity, "AddressCollision", []⟩⟩
-    else
-      evm ← Except.bimap (Prod.snd ∘ Prod.snd) id <| processCreateMessage vb msg (msg.gas + 50)
-  else
-    if !msg.tenv.auths.isEmpty then
-      let ⟨msg', setDelegationValue⟩ ← setDelegation msg
-      msg := msg'
-      refundCounter := refundCounter + setDelegationValue.toNat
-    match getDelegatedCodeAddress msg.code with
-    | none => .ok ()
-    | some dca =>
-      msg :=
-        {
-          msg with
-          disablePrecompiles := true,
-          accessedAddresses := msg.accessedAddresses.insert dca,
-          code := benv.state.getCode dca,
-          codeAddress := some dca
-        }
-    evm ← Except.bimap (Prod.snd ∘ Prod.snd) id <| processMessage vb msg (msg.gas + 50)
-  let mut logs : List Log := []
-  let mut accountsToDelete : AdrSet := .emptyWithCapacity
-  if evm.error.isNone then
-    logs := evm.logs
-    accountsToDelete := evm.accountsToDelete
-    let evmRc ← (Int.toNat? evm.refund_counter).toExcept "ERROR : refund counter is negative"
-    refundCounter := refundCounter + evmRc
-  --return MsgCallOutput
-  .ok ⟨
-    evm.msg.benv.state,
-    {
-      gasLeft := evm.gas_left,
-      refundCounter := refundCounter
-      logs := logs,
-      accountsToDelete := accountsToDelete,
-      error := evm.error,
-      returnData := evm.output
-    }
-  ⟩
--/
 
 def Tx.isTypeThree (tx : Tx) : Bool :=
   match tx.type with
@@ -4003,12 +3871,7 @@ def processWithdrawalsState (st : State) (wds : List Withdrawal) : State :=
 def processWithdrawals
   (benv : Benv) (bout : BlockOutput) (wds : List Withdrawal) : State × BlockOutput :=
   let trie := processWithdrawalsTrie bout.withdrawalsTrie wds
-  -- let trie : Std.TreeMap B8L Withdrawal compare :=
-  --   List.foldl (λ acc ⟨i, wd⟩ =>
-  --     acc.insert (BLT.toB8L <| .b8s i.toB8L) wd) bout.withdrawalsTrie wds.putIndex
   let state := processWithdrawalsState benv.state wds
-  -- let state :=
-  --   List.foldl (λ acc wd => acc.addBal wd.recipient (wd.amount * (10 ^ 9).toB256)) benv.state wds
   ⟨state, bout.withWithdrawalsTrie trie⟩
 
 def BLT.toAccessItem : BLT → Option (Adr × List B256)
