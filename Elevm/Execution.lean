@@ -1369,10 +1369,8 @@ def Rinst.run (evm : Evm) : Rinst → Execution
     let copy_gas_cost := gReturnDataCopy * words
     let extend_memory_cost := evm.extCost [⟨memory_start_index, size⟩]
     let evm ← chargeGas (gVerylow + copy_gas_cost + extend_memory_cost) evm
-
     if (evm.return_data.length < return_data_start_index + size) then
       .error ⟨"OutOfBoundsRead", evm⟩
-
     let value :=
       evm.return_data.sliceD return_data_start_index size 0
     .ok {
@@ -1767,26 +1765,52 @@ def Linst.run (evm : Evm) : Linst → Execution
     let ⟨output, evm⟩ := evm.memRead index size
     .ok {evm with output := output}
   | .dest => do
+    -- let donor := evm.contract
+    -- let ⟨donee, evm⟩ ← evm.pop <&> Prod.mapFst B256.toAdr
+    -- let donorBal := (evm.getAcct evm.contract).bal
+    -- let mut gas_cost := gasSelfDestruct
+    -- let mut evm := evm
+    -- if donee ∉ evm.accessedAddresses
+    --   then
+    --     evm := addAccessedAddress evm donee
+    --     gas_cost := gas_cost + gasColdAccountAccess
+    -- if (evm.getAcct donee).Empty ∧ donorBal ≠ 0
+    --   then gas_cost := gas_cost + gasSelfDestructNewAccount
+    -- evm ← chargeGas gas_cost evm
+    -- evm.assertDynamic
+    -- evm ←
+    --   (evm.subBal donor donorBal).toExcept
+    --     ⟨"ERROR : InsufficientBalanceError", evm⟩
+    -- evm := evm.addBal donee donorBal
+    -- if donor ∈ evm.msg.benv.createdAccounts
+    --   then evm := add_account_to_delete (evm.setBal donor 0) donor
+    -- .ok evm
     let donor := evm.contract
-    let ⟨donee, evm⟩ ← evm.pop <&> Prod.mapFst B256.toAdr
-    let donorBal := (evm.getAcct evm.contract).bal
-    let mut gas_cost := gasSelfDestruct
-    let mut evm := evm
-    if donee ∉ evm.accessedAddresses
-      then
-        evm := addAccessedAddress evm donee
-        gas_cost := gas_cost + gasColdAccountAccess
-    if (evm.getAcct donee).Empty ∧ donorBal ≠ 0
-      then gas_cost := gas_cost + gasSelfDestructNewAccount
-    evm ← chargeGas gas_cost evm
-    evm.assertDynamic
-    evm ←
-      (evm.subBal donor donorBal).toExcept
-        ⟨"ERROR : InsufficientBalanceError", evm⟩
-    evm := evm.addBal donee donorBal
-    if donor ∈ evm.msg.benv.createdAccounts
-      then evm := add_account_to_delete (evm.setBal donor 0) donor
-    .ok evm
+    let ⟨donee, evm1⟩ ← evm.pop <&> Prod.mapFst B256.toAdr
+    let donorBal := (evm1.getAcct evm1.contract).bal
+    let gasCost1 := gasSelfDestruct
+    let ⟨evm2, gasCost2⟩ :=
+      if donee ∉ evm1.accessedAddresses
+        then
+          ( ⟨ addAccessedAddress evm1 donee,
+              gasCost1 + gasColdAccountAccess ⟩ : Evm × Nat )
+        else
+          ⟨evm1, gasCost1⟩
+    let gasCost3 :=
+      if (evm2.getAcct donee).Empty ∧ donorBal ≠ 0 then
+        gasCost2 + gasSelfDestructNewAccount
+      else
+        gasCost2
+    let evm3 ← chargeGas gasCost3 evm2
+    evm3.assertDynamic
+    let evm4 ←
+      (evm3.subBal donor donorBal).toExcept
+        ⟨"ERROR : InsufficientBalanceError", evm3⟩
+    let evm5 := evm4.addBal donee donorBal
+    if donor ∈ evm5.msg.benv.createdAccounts then
+      .ok <| add_account_to_delete (evm5.setBal donor 0) donor
+    else
+      .ok evm5
 
 def except64th (n : Nat) : Nat := n - (n / 64)
 
