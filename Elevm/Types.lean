@@ -34,11 +34,9 @@ def Nat.toAdr (n : Nat) : Adr :=
 
 instance {n} : OfNat Adr n := ⟨n.toAdr⟩
 
-lemma toNat_toB32 {n : ℕ} : B32.toNat n.toB32 = n ↾ 32 :=
-  UInt32.toNat_ofNat
-
-lemma toNat_toB64 {n : ℕ} : B64.toNat (n.toB64) = n ↾ 64 :=
-  UInt64.toNat_ofNat
+lemma toNat_toB16 {n : ℕ} : B16.toNat n.toB16 = n ↾ 16 := UInt16.toNat_ofNat
+lemma toNat_toB32 {n : ℕ} : B32.toNat n.toB32 = n ↾ 32 := UInt32.toNat_ofNat
+lemma toNat_toB64 {n : ℕ} : B64.toNat (n.toB64) = n ↾ 64 := UInt64.toNat_ofNat
 
 lemma Nat.lo_lo_of_le {k m n : Nat} (le : m ≤ n) :
     (k ↾ m) ↾ n = k ↾ m := mod_mod_of_dvd' <| Nat.pow_dvd_pow _ le
@@ -147,6 +145,9 @@ lemma toB64_add (a b : Nat) :
 
 lemma B64.lt_iff_toNat_lt {a b : B64} : a < b ↔ a.toNat < b.toNat :=
   UInt64.lt_iff_toNat_lt
+
+lemma B8.toNat_add (a b : B8) : (a + b).toNat = (a.toNat + b.toNat) ↾ 8 :=
+  UInt8.toNat_add a b
 
 lemma B64.toNat_add (a b : B64) : (a + b).toNat = (a.toNat + b.toNat) ↾ 64 :=
   UInt64.toNat_add a b

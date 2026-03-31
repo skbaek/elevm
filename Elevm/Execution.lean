@@ -989,26 +989,128 @@ inductive Inst : Type
   | next : Ninst → Inst
   | jump : Jinst → Inst
 
+inductive InstType
+  | R | X | J | L | P
+
+def B8.toInstType (b : B8) : InstType :=
+  match b.highs with
+  | 0x00 => if b.lows = 0x00 then .L else .R
+  | 0x05 =>
+    match b.lows with
+    | 0x06 => .J
+    | 0x07 => .J
+    | 0x0B => .J
+    | 0x0F => .P
+    | _ => .R
+  | 0x06 => .P
+  | 0x07 => .P
+  | 0x0F =>
+    match b.lows with
+    | 0x03 => .L
+    | 0x0D => .L
+    | 0x0F => .L
+    | _ => .X
+  | _ => .R
+
+lemma Nat.hi_le (a b : Nat) : a ↿ b ≤ a := by
+  rw [hi, shiftLeft_eq, shiftRight_eq_div_pow]
+  apply Nat.div_mul_le_self
+
+lemma B8.shl_highs_or_lows_eq_self (x : B8) : (x.highs <<< 4) ||| x.lows = x := by
+  apply UInt8.toNat_inj.mp
+  unfold B8.lows
+  rw [UInt8.toNat_or]
+  rw [UInt8.toNat_and]
+  have rw : UInt8.toNat 15 = 15 := by rfl
+  rw [rw]; clear rw
+  rw [Nat.and_two_pow_sub_one_eq_mod _ 4]
+  have hh := Nat.hi_or_lo
+  rw [UInt8.toNat_shiftLeft]
+  unfold B8.highs
+  rw [UInt8.toNat_shiftRight]
+  have rw : (UInt8.toNat 4 % 8) = 4 := by rfl
+  rw [rw]; clear rw
+  have hh := Nat.hi_le x.toNat 4
+  rw [Nat.mod_eq_of_lt (Nat.lt_of_le_of_lt _ (UInt8.toNat_lt x))]
+  · apply Nat.hi_or_lo
+  · apply Nat.hi_le
+
+lemma B8.lt_of_highs_lt_highs (x y : B8) (lt : x.highs < y.highs) : x < y := by
+  rw [UInt8.lt_iff_toNat_lt]
+  have lt' : x.toNat < (x.toNat ↿ 4) + 16 := by
+    conv => lhs; rw [← Nat.hi_or_lo x.toNat 4]; rfl
+    rw [← @Nat.add_eq_or 4]
+    · rw [Nat.add_lt_add_iff_left]; apply Nat.lo_lt
+    · apply Nat.two_pow_dvd_shl
+    · apply Nat.lo_lt
+  have le : (x.toNat ↿ 4) + 16 ≤ (y.toNat ↿ 4) := by
+    simp only [Nat.hi]
+    rw [Nat.shiftLeft_eq, Nat.shiftLeft_eq]
+    have rw : 16 = 2 ^ 4 := by rfl
+    conv => lhs; arg 2; rw [rw]; rfl
+    clear rw;
+    rw [← Nat.succ_mul (x.toNat >>> 4) (2 ^ 4)]
+    rw [Nat.mul_le_mul_right_iff (by omega)]
+    apply Nat.succ_le_of_lt lt
+  have le' : (y.toNat ↿ 4) ≤ y.toNat := Nat.hi_le _ _
+  apply Nat.lt_of_lt_of_le lt' <| Nat.le_trans le le'
+
+lemma le_of_toInstType_eq_p (b : B8) (h : b.toInstType = .P) :
+    b.toNat ≤ 127 := by
+  apply Nat.le_of_lt_succ
+  apply (@UInt8.lt_iff_toNat_lt b 0x80).mp
+  apply B8.lt_of_highs_lt_highs
+  simp [B8.toInstType] at h; split at h
+  · split at h <;> cases h
+  · rename (B8.highs _ =  _) => heq; rw [heq]
+    apply (@UInt8.lt_iff_toNat_lt 5 8).mpr; simp
+  · rename (B8.highs _ =  _) => heq; rw [heq]
+    apply (@UInt8.lt_iff_toNat_lt 6 8).mpr; simp
+  · rename (B8.highs _ =  _) => heq; rw [heq]
+    apply (@UInt8.lt_iff_toNat_lt 7 8).mpr; simp
+  · split at h <;> cases h
+  · cases h
+
+
 def ByteArray.getInst (code : ByteArray) (pc : Nat) : Option Inst :=
   if pc < code.size
   then
     let b : B8 := code.get! pc
-    (b.toRinst <&> (.next ∘ .reg)) <|>
-    (b.toXinst <&> (.next ∘ .exec)) <|>
-    (b.toJinst <&> .jump) <|>
-    (b.toLinst <&> .last) <|>
-    (
-      let bn := b.toNat
-      if h_bn : 95 ≤ bn ∧ bn ≤ 127 then
-        let bs : B8L := code.sliceD (pc + 1) (bn - 95) 0
-        let h_bs : bs.length ≤ 32 := by
-          simp [bs, ByteArray.length_sliceD, h_bn.right]
-        some <| .next <| .push bs h_bs
-      else
-        none
-    )
+    match h : b.toInstType with
+    | .R => b.toRinst <&> (.next ∘ .reg)
+    | .X => b.toXinst <&> (.next ∘ .exec)
+    | .J => b.toJinst <&> .jump
+    | .L => b.toLinst <&> .last
+    | .P =>
+      let le := le_of_toInstType_eq_p b h
+      let bs : B8L := code.sliceD (pc + 1) (b.toNat - 95) 0
+      let le' : bs.length ≤ 32 := by
+        simp [bs, ByteArray.length_sliceD, le]
+      some <| .next <| .push bs le'
   else
     some (.last .stop)
+
+-- def ByteArray.getInst (code : ByteArray) (pc : Nat) : Option Inst :=
+--   if pc < code.size
+--   then
+--     let b : B8 := code.get! pc
+--     (b.toRinst <&> (.next ∘ .reg)) <|>
+--     (b.toXinst <&> (.next ∘ .exec)) <|>
+--     (b.toJinst <&> .jump) <|>
+--     (b.toLinst <&> .last) <|>
+--     (
+--       let bn := b.toNat
+--       --if h_bn : 95 ≤ bn ∧ bn ≤ 127 then
+--       if h_bn : bn ≤ 127 then
+--         let bs : B8L := code.sliceD (pc + 1) (bn - 95) 0
+--         let h_bs : bs.length ≤ 32 := by
+--           simp [bs, ByteArray.length_sliceD, h_bn]
+--         some <| .next <| .push bs h_bs
+--       else
+--         none
+--     )
+--   else
+--     some (.last .stop)
 
 def Evm.getInst (evm : Evm) : Option Inst :=
   ByteArray.getInst evm.code evm.pc
@@ -2567,6 +2669,7 @@ def executeCode.handleError :
       if err = "Revert"
       then .ok {evm with error := some "Revert"}
       else .error ⟨err, evm.msg.benv, evm.msg.tenv⟩
+
 
 mutual
 
