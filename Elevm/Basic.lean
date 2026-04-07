@@ -18,7 +18,6 @@ abbrev B64 : Type := UInt64
 abbrev B8L : Type := List B8
 abbrev B8A : Type := Array B8
 
-
 instance : LinearOrder B8 where
   lt_iff_le_not_ge a b := Nat.lt_iff_le_not_le
   le_refl a := Nat.le_refl _

@@ -766,16 +766,16 @@ structure Benv : Type where
 
 -- class TransactionEnvironment
 structure Tenv : Type where
-    origin: Adr
-    gasPrice: Nat
-    gas: Nat
-    accessListAddresses: AdrSet
-    accessListStorageKeys: KeySet
-    transientStorage: Tra
-    blobVersionedHashes: List B256
-    auths : List Auth
-    indexInBlock : Option Nat
-    txHash: Option B256
+  origin: Adr
+  gasPrice: Nat
+  gas: Nat
+  accessListAddresses: AdrSet
+  accessListStorageKeys: KeySet
+  transientStorage: Tra
+  blobVersionedHashes: List B256
+  auths : List Auth
+  indexInBlock : Option Nat
+  txHash: Option B256
 
 -- class Message
 structure Msg : Type where
@@ -797,10 +797,10 @@ structure Msg : Type where
   disablePrecompiles : Bool
 
 def Msg.withBenv (msg : Msg) (benv : Benv) : Msg :=
-  {msg with benv := benv }
+  {msg with benv := benv}
 
 def Benv.withState (benv : Benv) (st : State) : Benv :=
-  {benv with state := st }
+  {benv with state := st}
 
 def hasErrorType (err errType : String) : Bool :=
   err = errType || String.isPrefixOf (errType ++ " : ") err
@@ -1617,13 +1617,12 @@ def Rinst.run (evm : Evm) : Rinst → Execution
     let ct := evm2.contract
     let original_value := evm2.getOrigStorVal ct key
     let current_value := evm2.getStorVal ct key
-    let gasCost1 := 0
     let ⟨evm3, gasCost2⟩ :=
       if ⟨ct, key⟩ ∉ evm2.accessedStorageKeys then
         ( ⟨ addAccessedStorageKey evm2 ct key,
-            gasCost1 + gasColdSload ⟩ : Evm × Nat )
+            gasColdSload ⟩ : Evm × Nat )
       else
-        ⟨evm2, gasCost1⟩
+        ⟨evm2, 0⟩
     let gasCost3 :=
       if original_value = current_value ∧ current_value ≠ new_value then
         if original_value = 0 then
@@ -1893,28 +1892,8 @@ def Linst.run (evm : Evm) : Linst → Execution
     let ⟨output, evm⟩ := evm.memRead index size
     .ok {evm with output := output}
   | .dest => do
-    -- let donor := evm.contract
-    -- let ⟨donee, evm⟩ ← evm.pop <&> Prod.mapFst B256.toAdr
-    -- let donorBal := (evm.getAcct evm.contract).bal
-    -- let mut gas_cost := gasSelfDestruct
-    -- let mut evm := evm
-    -- if donee ∉ evm.accessedAddresses
-    --   then
-    --     evm := addAccessedAddress evm donee
-    --     gas_cost := gas_cost + gasColdAccountAccess
-    -- if (evm.getAcct donee).Empty ∧ donorBal ≠ 0
-    --   then gas_cost := gas_cost + gasSelfDestructNewAccount
-    -- evm ← chargeGas gas_cost evm
-    -- evm.assertDynamic
-    -- evm ←
-    --   (evm.subBal donor donorBal).toExcept
-    --     ⟨"ERROR : InsufficientBalanceError", evm⟩
-    -- evm := evm.addBal donee donorBal
-    -- if donor ∈ evm.msg.benv.createdAccounts
-    --   then evm := add_account_to_delete (evm.setBal donor 0) donor
-    -- .ok evm
     let donor := evm.contract
-    let ⟨donee, evm1⟩ ← evm.pop <&> Prod.mapFst B256.toAdr
+    let ⟨donee, evm1⟩ ← evm.popToAdr
     let donorBal := (evm1.getAcct evm1.contract).bal
     let gasCost1 := gasSelfDestruct
     let ⟨evm2, gasCost2⟩ :=
@@ -2670,7 +2649,6 @@ def executeCode.handleError :
       then .ok {evm with error := some "Revert"}
       else .error ⟨err, evm.msg.benv, evm.msg.tenv⟩
 
-
 mutual
 
   def executeCode (vb : Bool) (msg : Msg) :
@@ -2889,7 +2867,7 @@ mutual
       evm7.incrPc
     | .exec .call, lim + 1 => do
       let ⟨gas, evm1⟩ ← evm.pop
-      let ⟨callee, evm2⟩ ← evm1.pop <&> Prod.mapFst B256.toAdr
+      let ⟨callee, evm2⟩ ← evm1.popToAdr
       let ⟨value, evm3⟩ ← evm2.pop
       let ⟨inputIndex, evm4⟩ ← evm3.popToNat
       let ⟨inputSize, evm5⟩ ← evm4.popToNat
@@ -2947,7 +2925,7 @@ mutual
         evm12.incrPc
     | .exec .callcode, lim + 1 => do
       let ⟨gas, evm1⟩ ← evm.pop
-      let ⟨codeAddress, evm2⟩ ← evm1.pop <&> Prod.mapFst B256.toAdr
+      let ⟨codeAddress, evm2⟩ ← evm1.popToAdr
       let ⟨value, evm3⟩ ← evm2.pop
       let ⟨inputIndex, evm4⟩ ← evm3.popToNat
       let ⟨inputSize, evm5⟩ ← evm4.popToNat
@@ -3004,7 +2982,7 @@ mutual
         evm12.incrPc
     | .exec .delcall, lim + 1 => do
       let ⟨gas, evm1⟩ ← evm.pop
-      let ⟨codeAddress, evm2⟩ ← evm1.pop <&> Prod.mapFst B256.toAdr
+      let ⟨codeAddress, evm2⟩ ← evm1.popToAdr
       let ⟨inputIndex, evm3⟩ ← evm2.popToNat
       let ⟨inputSize, evm4⟩ ← evm3.popToNat
       let ⟨outputIndex, evm5⟩ ← evm4.popToNat
@@ -3048,7 +3026,7 @@ mutual
       evm11.incrPc
     | .exec .statcall, lim + 1 => do
       let ⟨gas, evm1⟩ ← evm.pop
-      let ⟨target, evm2⟩ ← evm1.pop <&> Prod.mapFst B256.toAdr
+      let ⟨target, evm2⟩ ← evm1.popToAdr
       let ⟨inputIndex, evm3⟩ ← evm2.popToNat
       let ⟨inputSize, evm4⟩ ← evm3.popToNat
       let ⟨outputIndex, evm5⟩ ← evm4.popToNat
