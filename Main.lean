@@ -187,6 +187,7 @@ def runBlockchainStTest (vb : Bool) (idx? : Option Nat)
       return ()
 
     .println s!"TEST NAME : {name}"
+    .println s!"TEST INDEX : {idx}"
 
     let gbh_json ← json.find "genesisBlockHeader"
     let gbh ← gbh_json.toHeader
