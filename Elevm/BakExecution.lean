@@ -2582,12 +2582,6 @@ def accessDelegation (evm : Evm) (adr : Adr) :
     ⟨true, adr, code, accessGasCost, evm⟩
   else ⟨false, adr, code, 0, evm⟩
 
-def processCreateMessage.benv (msg : Msg) : Benv :=
-  let adr := msg.currentTarget
-  let benv := msg.benv.setStor adr .empty
-  let benv := add_created_account benv adr
-  benv.incrNonce adr
-
 def processCreateMessage.msg (msg : Msg) : Msg :=
   let adr := msg.currentTarget
   let benv := msg.benv.setStor adr .empty
@@ -2697,7 +2691,8 @@ mutual
               processCreateMessage.exceptionalHalt evm err
                 msg.benv.state
                 msg.tenv.transientStorage
-          else .error ⟨err, evm.msg.benv, evm.msg.tenv⟩
+          else
+            .error ⟨err, evm.msg.benv, evm.msg.tenv⟩
       else
         .ok <| evm.rollback msg.benv.state msg.tenv.transientStorage
   termination_by lim => lim

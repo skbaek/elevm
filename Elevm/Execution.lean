@@ -1217,11 +1217,7 @@ def add_account_to_delete (devm : Devm) (a : Adr) : Devm :=
 --  {bs with createdAccounts := bs.createdAccounts.insert adr}
 
 def add_created_account (benv : Benv) (adr : Adr) : Benv :=
-  {
-    benv with
-    createdAccounts := benv.createdAccounts.insert adr
-    --stat := benv.stat.addCreatedAccount adr
-  }
+  {benv with createdAccounts := benv.createdAccounts.insert adr}
 
 def Acct.nil : Acct :=
   {
@@ -1993,6 +1989,7 @@ def incorporateChildOnError (parent child : Devm) (returnData : B8L) : Devm :=
     parent with
     gasLeft := parent.gasLeft + child.gasLeft
     state := child.state
+    createdAccounts := child.createdAccounts
     tenv := child.tenv
     returnData := returnData
   }
@@ -2002,6 +1999,7 @@ def incorporateChildOnSuccess (parent child : Devm) (returnData : B8L) : Devm :=
     parent with
     gasLeft := parent.gasLeft + child.gasLeft
     state := child.state
+    createdAccounts := child.createdAccounts
     tenv := child.tenv
     logs := parent.logs ++ child.logs
     refundCounter := parent.refundCounter + child.refundCounter
@@ -2743,7 +2741,8 @@ mutual
               processCreateMessage.exceptionalHalt evm err
                 msg.benv.state
                 msg.tenv.transientStorage
-          else .error ⟨err, evm.state, evm.createdAccounts, evm.tenv⟩
+          else
+            .error ⟨err, evm.state, evm.createdAccounts, evm.tenv⟩
       else
         .ok <| evm.rollback msg.benv.state msg.tenv.transientStorage
   termination_by lim => lim
