@@ -765,18 +765,21 @@ structure Benv : Type where
   createdAccounts : AdrSet
   stat : BenvStat
 
--- class TransactionEnvironment
-structure Tenv : Type where
+structure TenvStat : Type where
   origin: Adr
   gasPrice: Nat
   gas: Nat
   accessListAddresses: AdrSet
   accessListStorageKeys: KeySet
-  transientStorage: Tra
   blobVersionedHashes: List B256
   auths : List Auth
   indexInBlock : Option Nat
   txHash: Option B256
+
+-- class TransactionEnvironment
+structure Tenv : Type where
+  transientStorage: Tra
+  stat : TenvStat
 
 -- class Message
 structure Msg : Type where
@@ -863,7 +866,7 @@ structure Devm : Type where
   accessedStorageKeys : KeySet
   state : State
   createdAccounts : AdrSet
-  tenv : Tenv
+  transientStorage : Tra
 
 structure Sevm : Type where
   caller : Adr
@@ -879,6 +882,7 @@ structure Sevm : Type where
   isStatic : Bool
   disablePrecompiles : Bool
   benvStat : BenvStat
+  tenvStat : TenvStat
 
 @[ext]
 structure Evm : Type where
@@ -886,17 +890,17 @@ structure Evm : Type where
   devm : Devm
   sevm : Sevm
 
-def Evm.gasLeft (evm : Evm) : Nat := evm.devm.gasLeft
-def Evm.logs (evm : Evm) : List Log := evm.devm.logs
-def Evm.refundCounter (evm : Evm) : Int := evm.devm.refundCounter
-def Evm.output (evm : Evm) : B8L := evm.devm.output
-def Evm.accountsToDelete (evm : Evm) : AdrSet := evm.devm.accountsToDelete
-def Evm.returnData (evm : Evm) : B8L := evm.devm.returnData
-def Evm.error (evm : Evm) : Option String := evm.devm.error
-def Evm.accessedAddresses (evm : Evm) : AdrSet := evm.devm.accessedAddresses
-def Evm.accessedStorageKeys (evm : Evm) : KeySet := evm.devm.accessedStorageKeys
+-- def Evm.gasLeft (evm : Evm) : Nat := evm.devm.gasLeft
+-- def Evm.logs (evm : Evm) : List Log := evm.devm.logs
+-- def Evm.refundCounter (evm : Evm) : Int := evm.devm.refundCounter
+-- def Evm.output (evm : Evm) : B8L := evm.devm.output
+-- def Evm.accountsToDelete (evm : Evm) : AdrSet := evm.devm.accountsToDelete
+-- def Evm.returnData (evm : Evm) : B8L := evm.devm.returnData
+-- def Evm.error (evm : Evm) : Option String := evm.devm.error
+-- def Evm.accessedAddresses (evm : Evm) : AdrSet := evm.devm.accessedAddresses
+-- def Evm.accessedStorageKeys (evm : Evm) : KeySet := evm.devm.accessedStorageKeys
 --def Evm.benv (evm : Evm) :  Benv := evm.devm.benv
-def Evm.tenv (evm : Evm) :  Tenv := evm.devm.tenv
+-- def Evm.tenv (evm : Evm) :  Tenv := evm.devm.tenv
 
 def Devm.withStack (devm : Devm) (stack : List B256) : Devm := {devm with stack := stack}
 def Devm.withMemory (devm : Devm) (memory : Mem) : Devm := {devm with memory := memory}
@@ -913,7 +917,7 @@ def Devm.withAccessedStorageKeys (devm : Devm) (accessedStorageKeys : KeySet) : 
 def Devm.withState (devm : Devm) (state : State) : Devm :=
   {devm with state := state}
 
-def Devm.withTenv (devm : Devm) (tenv : Tenv) : Devm := {devm with tenv := tenv}
+-- def Devm.withTenv (devm : Devm) (tenv : Tenv) : Devm := {devm with tenv := tenv}
 
 def Stack.toStrings (stack : List B256) : List String :=
   fork "STACK" [
@@ -981,28 +985,28 @@ def Benv.toStrings (benv : Benv) : List String :=
     fork "STAT" [benv.stat.toStrings]
   ]
 
-def Evm.stack (evm : Evm) : List B256 := evm.devm.stack
-def Evm.memory (evm : Evm) : Mem := evm.devm.memory
-def Evm.code (evm : Evm) : ByteArray := evm.sevm.code
+-- def Evm.stack (evm : Evm) : List B256 := evm.devm.stack
+-- def Evm.memory (evm : Evm) : Mem := evm.devm.memory
+-- def Evm.code (evm : Evm) : ByteArray := evm.sevm.code
 
 def Evm.toStrings (evm : Evm) : List String :=
   fork "EVM" [
     [s!"PC : {evm.pc}"],
-    Stack.toStrings evm.stack,
-    Mem.toStrings evm.memory,
-    [s!"CODE : {B8L.toHex evm.code.toList}"],
-    [s!"GAS LEFT : {evm.gasLeft}"],
-    fork "LOGS" (evm.logs.map Log.toStrings),
-    [s!"REFUND COUNTER : {evm.refundCounter}"],
+    Stack.toStrings evm.devm.stack,
+    Mem.toStrings evm.devm.memory,
+    [s!"CODE : {B8L.toHex evm.sevm.code.toList}"],
+    [s!"GAS LEFT : {evm.devm.gasLeft}"],
+    fork "LOGS" (evm.devm.logs.map Log.toStrings),
+    [s!"REFUND COUNTER : {evm.devm.refundCounter}"],
     ["MSG : *print unimplemented*"], --Msg.toStrings evm.msg,
-    [s!"output : {evm.output.toHex}"],
+    [s!"output : {evm.devm.output.toHex}"],
     fork "ACCOUNTS TO DELETE"
-      (evm.accountsToDelete.toList.map (mkSingleton ∘ Adr.toHex)),
-    [s!"return data : {evm.returnData.toHex}"],
+      (evm.devm.accountsToDelete.toList.map (mkSingleton ∘ Adr.toHex)),
+    [s!"return data : {evm.devm.returnData.toHex}"],
     fork "ACCESSED ADDRESSES"
-      (evm.accessedAddresses.toList.map (mkSingleton ∘ Adr.toHex)),
+      (evm.devm.accessedAddresses.toList.map (mkSingleton ∘ Adr.toHex)),
     fork "ACCESSED STORAGE KEYS"
-      (evm.accessedStorageKeys.toList.map (fun kv => [s!"{kv.fst.toHex} : {B256.toHex kv.snd}"]))
+      (evm.devm.accessedStorageKeys.toList.map (fun kv => [s!"{kv.fst.toHex} : {B256.toHex kv.snd}"]))
   ]
 
 abbrev Adr.isPrecomp (a : Adr) : Prop :=
@@ -1151,7 +1155,7 @@ def ByteArray.getInst (code : ByteArray) (pc : Nat) : Option Inst :=
     some (.last .stop)
 
 def Evm.getInst (evm : Evm) : Option Inst :=
-  ByteArray.getInst evm.code evm.pc
+  ByteArray.getInst evm.sevm.code evm.pc
 
 def fakeExpAux (num den i : Nat) : Nat → Nat → Nat
   | _, 0 => panic! "error : recursion limit reached for fake exponentiation"
@@ -1307,13 +1311,14 @@ def Tenv.setTransVal (tenv : Tenv) (adr : Adr) (key val : B256) : Tenv :=
 --   {msg with tenv := msg.tenv.setTransVal adr key val}
 
 def Devm.setTransVal (devm : Devm) (adr : Adr) (key val : B256) : Devm :=
-  devm.withTenv (devm.tenv.setTransVal adr key val)
+  --devm.withTenv (devm.tenv.setTransVal adr key val)
+  {devm with transientStorage := devm.transientStorage.setStorVal adr key val}
 
 def getOrigStorVal (sevm : Sevm) (adr : Adr) (key : B256) : B256 :=
   (getOrigAcct sevm adr).stor.getD key 0
 
 def Devm.getTransVal (devm : Devm) (adr : Adr) (key : B256) : B256 :=
-  (devm.tenv.transientStorage.getD adr .empty).getD key 0
+  (devm.transientStorage.getD adr .empty).getD key 0
 
 def memExtSize
   (current_size access_index access_size : Nat) : Nat :=
@@ -1421,7 +1426,7 @@ def Rinst.runCore
   | .basefee => pushItem sevm.benvStat.baseFeePerGas.toB256 gBase devm
   | .blobhash => do
     let ⟨x, devm⟩ ← devm.pop
-    let y : B256 := devm.tenv.blobVersionedHashes.getD x.toNat 0
+    let y : B256 := sevm.tenvStat.blobVersionedHashes.getD x.toNat 0
     chargeGas gHashopcode devm >>= Devm.push y
   | .blobbasefee => do
     let fee := calculate_blob_gas_price sevm.benvStat.excessBlobGas
@@ -1434,7 +1439,7 @@ def Rinst.runCore
       then chargeGas gasWarmAccess devm
       else chargeGas gasColdAccountAccess (addAccessedAddress devm a)
     devm'.push (devm'.getBal a)
-  | .origin => pushItem devm.tenv.origin.toB256 gBase devm
+  | .origin => pushItem sevm.tenvStat.origin.toB256 gBase devm
   | .caller => pushItem sevm.caller.toB256 gBase devm
   | .callvalue => pushItem sevm.value gBase devm
   | .calldataload => do
@@ -1464,7 +1469,7 @@ def Rinst.runCore
     let devm ← chargeGas (gVerylow + copy_gas_cost + extend_memory_cost) devm
     let value := sevm.code.sliceD code_start_index size (Linst.toB8 .stop)
     .ok {devm with memory := devm.memory.write memory_start_index value}
-  | .gasprice => pushItem devm.tenv.gasPrice.toB256 gBase devm
+  | .gasprice => pushItem sevm.tenvStat.gasPrice.toB256 gBase devm
   | .extcodesize => do
     let ⟨adr, devm⟩ ← devm.popToAdr
     let devm ←
@@ -1739,18 +1744,23 @@ instance : Inhabited Benv := ⟨
   }
 ⟩
 
-instance : Inhabited Tenv := ⟨
+instance : Inhabited TenvStat := ⟨
   {
     origin := 0
     gasPrice := 0
     gas := 0
     accessListAddresses := .emptyWithCapacity
     accessListStorageKeys := .emptyWithCapacity
-    transientStorage := .empty
     blobVersionedHashes := []
     auths := []
     indexInBlock := none
     txHash := none
+  }
+⟩
+instance : Inhabited Tenv := ⟨
+  {
+    transientStorage := .empty
+    stat := default
   }
 ⟩
 
@@ -1791,7 +1801,7 @@ instance : Inhabited Devm := ⟨
     accessedStorageKeys := .emptyWithCapacity
     state := .empty
     createdAccounts := .emptyWithCapacity
-    tenv := default
+    transientStorage := default
   }
 ⟩
 
@@ -1811,6 +1821,7 @@ instance : Inhabited Sevm := ⟨
     isStatic := false
     disablePrecompiles := false
     benvStat := default
+    tenvStat := default
   }
 ⟩
 
@@ -1990,7 +2001,7 @@ def incorporateChildOnError (parent child : Devm) (returnData : B8L) : Devm :=
     gasLeft := parent.gasLeft + child.gasLeft
     state := child.state
     createdAccounts := child.createdAccounts
-    tenv := child.tenv
+    transientStorage := child.transientStorage
     returnData := returnData
   }
 
@@ -2000,7 +2011,7 @@ def incorporateChildOnSuccess (parent child : Devm) (returnData : B8L) : Devm :=
     gasLeft := parent.gasLeft + child.gasLeft
     state := child.state
     createdAccounts := child.createdAccounts
-    tenv := child.tenv
+    transientStorage := child.transientStorage
     logs := parent.logs ++ child.logs
     refundCounter := parent.refundCounter + child.refundCounter
     accountsToDelete := parent.accountsToDelete.union child.accountsToDelete
@@ -2064,21 +2075,18 @@ def Devm.rollback (devm : Devm) (wor : State) (tra : Tra) : Devm :=
   {
     devm with
     state := wor,
-    tenv := {
-      devm.tenv with
-      transientStorage := tra
-    }
+    transientStorage := tra
   }
 
 def liftToExecution (devm : Devm)
-  (f : Except (String × State × AdrSet × Tenv) Devm) : Execution := do
+  (f : Except (String × State × AdrSet × Tra) Devm) : Execution := do
   match f with
-  | .error ⟨err, state, createdAccounts, tenv⟩ =>
+  | .error ⟨err, state, createdAccounts, tra⟩ =>
     let devm' := {
       devm with
       state := state
       createdAccounts := createdAccounts
-      tenv := tenv
+      transientStorage := tra
     }
     .error ⟨err, devm'⟩
   | .ok devm' => .ok devm'
@@ -2549,10 +2557,10 @@ def List.toStringSingleQuote {ξ : Type u} [inst : ToString ξ] : List ξ → St
 def stepString (evm : Evm) (i : Inst) : String :=
   "step(" ++
     s!"pc({evm.pc}), " ++
-    s!"gas({evm.gasLeft}), " ++
+    s!"gas({evm.devm.gasLeft}), " ++
     s!"op(\"{i.toOpString}\"), " ++
     s!"depth({evm.sevm.depth}), " ++
-    s!"{List.toStringSingleQuote <| evm.stack.map (fun x => "0x" ++ x.toHex.dropZeroes)}" ++
+    s!"{List.toStringSingleQuote <| evm.devm.stack.map (fun x => "0x" ++ x.toHex.dropZeroes)}" ++
   ")."
 
 def showStep (vb : Bool) (evm : Evm) (i : Inst) : Except (Evm × String) Unit :=
@@ -2564,7 +2572,7 @@ def showStep (vb : Bool) (evm : Evm) (i : Inst) : Except (Evm × String) Unit :=
 
 def showLim (lim : Nat) (evm : Evm) : Except (Evm × String) Unit := do
   if lim % 100000 = 0 then
-    .print s!"Recursion limit = {lim}, gas left = {evm.gasLeft}"
+    .print s!"Recursion limit = {lim}, gas left = {evm.devm.gasLeft}"
 
 def isValidDelegation (code: ByteArray) : Prop :=
   code.size = eoaDelegatedCodeLength ∧
@@ -2640,6 +2648,7 @@ def initSevm (msg : Msg) : Sevm :=
     isStatic := msg.isStatic
     disablePrecompiles := msg.disablePrecompiles
     benvStat := msg.benv.stat
+    tenvStat := msg.tenv.stat
   }
 
 def initDevm (msg : Msg) : Devm :=
@@ -2657,7 +2666,7 @@ def initDevm (msg : Msg) : Devm :=
     accessedStorageKeys := msg.accessedStorageKeys
     state := msg.benv.state
     createdAccounts := msg.benv.createdAccounts
-    tenv := msg.tenv
+    transientStorage := msg.tenv.transientStorage
   }
 
 def initEvm (msg : Msg) : Evm :=
@@ -2668,17 +2677,17 @@ def initEvm (msg : Msg) : Evm :=
   }
 
 def Msg.benvAfterTransfer (msg : Msg) :
-    Except (String × State × AdrSet × Tenv) Benv :=
+    Except (String × State × AdrSet × Tra) Benv :=
   if msg.shouldTransferValue then do
     let benv ←
       (msg.benv.subBal msg.caller msg.value).toExcept
-        ⟨"AssertionError", msg.benv.state, msg.benv.createdAccounts, msg.tenv⟩
+        ⟨"AssertionError", msg.benv.state, msg.benv.createdAccounts, msg.tenv.transientStorage⟩
     .ok <| benv.addBal msg.currentTarget msg.value
   else
     .ok msg.benv
 
 def executeCode.handleError :
-    Execution → Except (String × State × AdrSet × Tenv) Devm
+    Execution → Except (String × State × AdrSet × Tra) Devm
   | .ok evm => .ok evm
   | .error ⟨err, evm⟩ =>
     if isExceptionalHalt err
@@ -2686,18 +2695,18 @@ def executeCode.handleError :
     else
       if err = "Revert"
       then .ok {evm with error := some "Revert"}
-      else .error ⟨err, evm.state, evm.createdAccounts, evm.tenv⟩
+      else .error ⟨err, evm.state, evm.createdAccounts, evm.transientStorage⟩
 
 mutual
 
   def executeCode (vb : Bool) (msg : Msg) :
-    Nat → Except (String × State × AdrSet × Tenv) Devm
+    Nat → Except (String × State × AdrSet × Tra) Devm
     | 0 =>
       .error ⟨
         "RecursionLimit",
         msg.benv.state,
         msg.benv.createdAccounts,
-        msg.tenv
+        msg.tenv.transientStorage
       ⟩
     | lim + 1 => do
       let evm : Evm := initEvm msg
@@ -2712,12 +2721,18 @@ mutual
   termination_by lim => lim
 
   def processMessage (vb : Bool) (msg : Msg) :
-    Nat → Except (String × State × AdrSet × Tenv) Devm
-    | 0 => .error ⟨"RecursionLimit", msg.benv.state, msg.benv.createdAccounts, msg.tenv⟩
+    Nat → Except (String × State × AdrSet × Tra) Devm
+    | 0 =>
+      .error ⟨
+        "RecursionLimit",
+        msg.benv.state,
+        msg.benv.createdAccounts,
+        msg.tenv.transientStorage
+      ⟩
     | lim + 1 => do
       .assert
         (msg.depth ≤ 1024)
-        ⟨"StackDepthLimitError", msg.benv.state, msg.benv.createdAccounts, msg.tenv⟩
+        ⟨"StackDepthLimitError", msg.benv.state, msg.benv.createdAccounts, msg.tenv.transientStorage⟩
       let benv ← msg.benvAfterTransfer
       let evm ← executeCode vb (msg.withBenv benv) lim
       if evm.error.isSome then
@@ -2727,8 +2742,8 @@ mutual
   termination_by lim => lim
 
   def processCreateMessage (vb : Bool) (msg : Msg) :
-    Nat → Except (String × State × AdrSet × Tenv) Devm
-    | 0 => .error ⟨"RecursionLimit", msg.benv.state, msg.benv.createdAccounts, msg.tenv⟩
+    Nat → Except (String × State × AdrSet × Tra) Devm
+    | 0 => .error ⟨"RecursionLimit", msg.benv.state, msg.benv.createdAccounts, msg.tenv.transientStorage⟩
     | lim + 1 => do
       let evm ← processMessage vb (processCreateMessage.msg msg) lim
       if evm.error.isNone then
@@ -2742,7 +2757,7 @@ mutual
                 msg.benv.state
                 msg.tenv.transientStorage
           else
-            .error ⟨err, evm.state, evm.createdAccounts, evm.tenv⟩
+            .error ⟨err, evm.state, evm.createdAccounts, evm.transientStorage⟩
       else
         .ok <| evm.rollback msg.benv.state msg.tenv.transientStorage
   termination_by lim => lim
@@ -2779,7 +2794,7 @@ mutual
         return (← evm4.push 0)
       let childMsg : Msg ← .ok <| {
         benv := Benv.mk evm4.state evm4.createdAccounts sevm.benvStat
-        tenv := evm4.tenv
+        tenv := {transientStorage := evm4.transientStorage, stat := sevm.tenvStat} --evm4.tenv
         caller := sevm.currentTarget
         target := .none
         gas := createMsgGas
@@ -2827,7 +2842,7 @@ mutual
       let calldata ← .ok <| evm1.memory.data.sliceD input_index input_size 0
       let (childMsg : Msg) ← .ok {
         benv := {state := evm1.state, createdAccounts := evm1.createdAccounts, stat := sevm.benvStat} --evm1.benv
-        tenv := evm1.tenv
+        tenv := {transientStorage := evm1.transientStorage, stat := sevm.tenvStat} -- evm1.tenv
         caller := caller
         target := target
         gas := gas
@@ -3608,7 +3623,7 @@ def recoverAuthority (auth : Auth) : Except String Adr := do
 def setDelegation (msg : Msg) : Except String (Msg × B256) := do
   let mut refundCounter : B256 := 0
   let mut msg := msg
-  for auth in msg.tenv.auths do
+  for auth in msg.tenv.stat.auths do
     if auth.chainId != msg.benv.stat.chainId && auth.chainId != 0 then
       continue
     if auth.nonce = B64.max then
@@ -3682,7 +3697,7 @@ def processMessageCall.create (vb : Bool) (msg : Msg) :
 def processMessageCall.call (vb : Bool) (msg : Msg) :
   Except String (State × MsgCallOutput) := do
   let (⟨msgDelegation, refundDelegation⟩ : Msg × Nat) ←
-    if msg.tenv.auths.isEmpty then
+    if msg.tenv.stat.auths.isEmpty then
       .ok (⟨msg, 0⟩ : Msg × Nat)
     else do
       let ⟨msgDelegation, setDelegationValue⟩ ← setDelegation msg
@@ -3877,8 +3892,8 @@ def prepareMessage (benv: Benv) (tenv: Tenv) (tx: Tx) :
     match tx.type.receiver? with
     | none => ⟨
         compute_contract_address
-          tenv.origin
-          (benv.state.getNonce tenv.origin - 1),
+          tenv.stat.origin
+          (benv.state.getNonce tenv.stat.origin - 1),
         [],
         .mk (.mk tx.data),
         none
@@ -3890,14 +3905,14 @@ def prepareMessage (benv: Benv) (tenv: Tenv) (tx: Tx) :
         target
       ⟩
   let accessedAddresses : AdrSet :=
-    tenv.accessListAddresses.insertMany
-      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, tenv.origin, currentTarget]
+    tenv.stat.accessListAddresses.insertMany
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, tenv.stat.origin, currentTarget]
   .ok {
     benv := benv,
     tenv := tenv,
-    caller := tenv.origin,
+    caller := tenv.stat.origin,
     target := tx.type.receiver?,
-    gas := tenv.gas,
+    gas := tenv.stat.gas,
     value := tx.value.toB256,
     data := msgData,
     code := code,
@@ -3907,7 +3922,7 @@ def prepareMessage (benv: Benv) (tenv: Tenv) (tx: Tx) :
     shouldTransferValue := true,
     isStatic := false,
     accessedAddresses := accessedAddresses,
-    accessedStorageKeys := tenv.accessListStorageKeys,
+    accessedStorageKeys := tenv.stat.accessListStorageKeys,
     disablePrecompiles := false
   }
 
@@ -4004,16 +4019,18 @@ def processTransaction
   let preaccessedStorageKeys : KeySet :=
     .ofList (tx.accessList.map <| λ ⟨adr, keys⟩ => keys.map (⟨adr, ·⟩)).flatten
   let tenv : Tenv := {
-    origin := sender
-    gasPrice := effectiveGasPrice
-    gas := gas
-    accessListAddresses := preaccessedAddresses
-    accessListStorageKeys := preaccessedStorageKeys
     transientStorage := .empty
-    blobVersionedHashes := blobVersionedHashes
-    auths := tx.auths
-    indexInBlock := index
-    txHash := getTxHash tx
+    stat := {
+      origin := sender
+      gasPrice := effectiveGasPrice
+      gas := gas
+      accessListAddresses := preaccessedAddresses
+      accessListStorageKeys := preaccessedStorageKeys
+      blobVersionedHashes := blobVersionedHashes
+      auths := tx.auths
+      indexInBlock := index
+      txHash := getTxHash tx
+    }
   }
   let msg ← prepareMessage {benv with state := state} tenv tx
   let ⟨state', txOutput⟩ ← processMessageCall vb msg
@@ -4189,16 +4206,18 @@ def decodeTx : B8L ⊕ Tx → Except String Tx
 
 def processSystemTransactionTenv (benv : Benv) : Tenv :=
   {
-    origin := systemAddress,
-    gasPrice := benv.stat.baseFeePerGas,
-    gas := systemTransactionGas,
-    accessListAddresses := .emptyWithCapacity
-    accessListStorageKeys := .emptyWithCapacity
     transientStorage := .empty,
-    blobVersionedHashes := [],
-    auths := [],
-    indexInBlock := none,
-    txHash := none
+    stat := {
+      origin := systemAddress,
+      gasPrice := benv.stat.baseFeePerGas,
+      gas := systemTransactionGas,
+      accessListAddresses := .emptyWithCapacity
+      accessListStorageKeys := .emptyWithCapacity
+      blobVersionedHashes := [],
+      auths := [],
+      indexInBlock := none,
+      txHash := none
+    }
   }
 
 def processSystemTransactionMsg (benv : Benv) (tenv : Tenv)
@@ -4227,38 +4246,8 @@ def processSystemTransaction (vb : Bool) (benv : Benv)
   (target : Adr) (code : ByteArray) (data : B8L) :
   Except String (State × MsgCallOutput) := do
   let txEnv : Tenv := processSystemTransactionTenv benv
-  -- let txEnv : Tenv := {
-  --   origin := systemAddress,
-  --   gasPrice := benv.baseFeePerGas,
-  --   gas := systemTransactionGas,
-  --   accessListAddresses := .emptyWithCapacity
-  --   accessListStorageKeys := .emptyWithCapacity
-  --   transientStorage := .empty,
-  --   blobVersionedHashes := [],
-  --   auths := [],
-  --   indexInBlock := none,
-  --   txHash := none
-  -- }
   let systemTxMsg : Msg :=
     processSystemTransactionMsg benv txEnv target data code
-  -- let systemTxMsg : Msg := {
-  --   benv := benv,
-  --   tenv := txEnv,
-  --   caller := systemAddress,
-  --   target := target,
-  --   gas := systemTransactionGas,
-  --   value := 0,
-  --   data := data,
-  --   code := code,
-  --   depth := 0,
-  --   currentTarget := target,
-  --   codeAddress := target,
-  --   shouldTransferValue := false,
-  --   isStatic := false,
-  --   accessedAddresses := .emptyWithCapacity,
-  --   accessedStorageKeys := .emptyWithCapacity,
-  --   disablePrecompiles := false
-  -- }
   processMessageCall vb systemTxMsg
 
 def extractDepositData (data : B8L) : Except String B8L := do
