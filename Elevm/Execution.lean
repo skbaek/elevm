@@ -2650,6 +2650,11 @@ def executeCode.handleError :
       then .ok {evm with error := some "Revert"}
       else .error ⟨err, evm.state, evm.createdAccounts, evm.transientStorage⟩
 
+def Execution.withPc (pc : Nat) (exn : Execution) :
+     Except (String × Devm) (Nat × Devm) := do
+  let devm ← exn
+  .ok ⟨pc, devm⟩
+
 mutual
 
   def executeCode (vb : Bool) (msg : Msg) :
@@ -2821,15 +2826,281 @@ mutual
         .ok <| evm2.memWrite output_index actualOutput
   termination_by lim => lim
 
+  def Xinst.run (vb : Bool) (sevm : Sevm) (devm : Devm) :
+      Xinst → Nat → Execution
+    |  _, 0 => .error ⟨"RecursionLimit", devm⟩
+    | .create, lim + 1 => do
+      let ⟨endowment, devm1⟩ ← devm.pop
+      let ⟨memoryIndex, devm2⟩ ← devm1.popToNat
+      let ⟨memorySize, devm3⟩ ← devm2.popToNat
+      let extendCost ← .ok <| devm3.extCost [⟨memoryIndex, memorySize⟩]
+      let initCodeCost ← .ok <| gasInitCodeWordCost * (ceilDiv memorySize 32)
+      let devm4 ← chargeGas (gasCreate + extendCost + initCodeCost) devm3
+      let devm5 ← .ok <| devm4.memExtends [⟨memoryIndex, memorySize⟩]
+      let newAddress ← .ok <|
+        compute_contract_address
+          sevm.currentTarget
+          (devm5.state.get sevm.currentTarget).nonce
+      genericCreate
+        vb
+        sevm
+        devm5
+        endowment
+        newAddress
+        memoryIndex
+        memorySize
+        lim
+    | .create2, lim + 1 => do
+      let ⟨endowment, devm1⟩ ← devm.pop
+      let ⟨memoryIndex, devm2⟩ ← devm1.popToNat
+      let ⟨memorySize, devm3⟩ ← devm2.popToNat
+      let ⟨salt, devm4⟩ ← devm3.pop
+      let extendCost ← .ok <| devm4.extCost [⟨memoryIndex, memorySize⟩]
+      let initCodeHashCost ← .ok <|
+        gasKeccak256Word * ceilDiv memorySize 32
+      let initCodeCost ← .ok <|
+        gasInitCodeWordCost * (ceilDiv memorySize 32)
+      let devm5 ←
+        chargeGas
+          (gasCreate + initCodeHashCost + extendCost + initCodeCost)
+          devm4
+      let devm6 ← .ok <| devm5.memExtends [⟨memoryIndex, memorySize⟩]
+      let newAddress ← .ok <|
+        create2NewAddress
+          sevm.currentTarget
+          salt
+          (devm6.memory.data.sliceD memoryIndex memorySize 0)
+      genericCreate
+        vb
+        sevm
+        devm6
+        endowment
+        newAddress
+        memoryIndex
+        memorySize
+        lim
+    | .call, lim + 1 => do
+      let ⟨gas, devm1⟩ ← devm.pop
+      let ⟨callee, devm2⟩ ← devm1.popToAdr
+      let ⟨value, devm3⟩ ← devm2.pop
+      let ⟨inputIndex, devm4⟩ ← devm3.popToNat
+      let ⟨inputSize, devm5⟩ ← devm4.popToNat
+      let ⟨outputIndex, devm6⟩ ← devm5.popToNat
+      let ⟨outputSize, devm7⟩ ← devm6.popToNat
+      let extendCost ← .ok <|
+        devm7.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      let preAccessCost ← .ok <| access_cost callee devm7.accessedAddresses
+      let devm8 ← .ok <| addAccessedAddress devm7 callee
+      let ⟨disablePrecompiles, _, code, delegatedAccessGasCost, devm9⟩ ← .ok <|
+        accessDelegation devm8 callee
+      let accessCost ← .ok <| preAccessCost + delegatedAccessGasCost
+      let createCost ← .ok <|
+        if (¬ (devm9.getAcct callee).Empty) ∨ value = 0
+        then 0
+        else gNewAccount
+      let transferCost ← .ok <| if value = 0 then 0 else gasCallValue
+      let ⟨msgCallCost, msgCallStipend⟩ ← .ok <|
+        calculateMsgCallGas
+          value.toNat
+          gas.toNat
+          devm9.gasLeft
+          extendCost
+          (accessCost + createCost + transferCost)
+      let devm10 ← chargeGas (msgCallCost + extendCost) devm9
+      .assert (!sevm.isStatic ∨ value = 0) ⟨"WriteInStaticContext", devm10⟩
+      let devm11 ← .ok <|
+        devm10.memExtends
+          [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      let senderBal ← .ok <| (devm11.getAcct sevm.currentTarget).bal
+      if senderBal < value then
+        let devm12 ← devm11.push 0
+        .ok {
+          devm12 with
+          returnData := []
+          gasLeft := devm12.gasLeft + msgCallStipend
+        }
+      else
+        genericCall
+          vb
+          sevm
+          devm11
+          msgCallStipend
+          value
+          sevm.currentTarget
+          callee
+          callee
+          true
+          false
+          inputIndex
+          inputSize
+          outputIndex
+          outputSize
+          code
+          disablePrecompiles
+          lim
+    | .callcode, lim + 1 => do
+      let ⟨gas, devm1⟩ ← devm.pop
+      let ⟨codeAddress, devm2⟩ ← devm1.popToAdr
+      let ⟨value, devm3⟩ ← devm2.pop
+      let ⟨inputIndex, devm4⟩ ← devm3.popToNat
+      let ⟨inputSize, devm5⟩ ← devm4.popToNat
+      let ⟨outputIndex, devm6⟩ ← devm5.popToNat
+      let ⟨outputSize, devm7⟩ ← devm6.popToNat
+      let extendCost ← .ok <|
+        devm7.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      let preAccessCost ← .ok <| access_cost codeAddress devm7.accessedAddresses
+      let devm8 ← .ok <| addAccessedAddress devm7 codeAddress
+      let ⟨disablePrecompiles, newCodeAddress, code, delegatedAccessGasCost, devm9⟩ ← .ok <|
+        accessDelegation devm8 codeAddress
+      let accessCost ← .ok <| preAccessCost + delegatedAccessGasCost
+      let transferCost ← .ok <| if value = 0 then 0 else gasCallValue
+      let ⟨msgCallCost, msgCallStipend⟩ ← .ok <|
+        calculateMsgCallGas
+          value.toNat
+          gas.toNat
+          devm9.gasLeft
+          extendCost
+          (accessCost + transferCost)
+      let devm10 ← chargeGas (msgCallCost + extendCost) devm9
+      let devm11 ← .ok <|
+        devm10.memExtends
+          [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      let senderBal ← .ok (devm11.getAcct sevm.currentTarget).bal
+      if senderBal < value
+      then
+        let devm12 ← devm11.push 0
+        .ok {
+          devm12 with
+          returnData := []
+          gasLeft := devm12.gasLeft + msgCallStipend
+        }
+      else
+        genericCall
+          vb
+          sevm
+          devm11
+          msgCallStipend
+          value
+          sevm.currentTarget
+          sevm.currentTarget
+          newCodeAddress
+          true
+          false
+          inputIndex
+          inputSize
+          outputIndex
+          outputSize
+          code
+          disablePrecompiles
+          lim
+    | .delcall, lim + 1 => do
+      let ⟨gas, devm1⟩ ← devm.pop
+      let ⟨codeAddress, devm2⟩ ← devm1.popToAdr
+      let ⟨inputIndex, devm3⟩ ← devm2.popToNat
+      let ⟨inputSize, devm4⟩ ← devm3.popToNat
+      let ⟨outputIndex, devm5⟩ ← devm4.popToNat
+      let ⟨outputSize, devm6⟩ ← devm5.popToNat
+      let extendCost ← .ok <|
+        devm6.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      let preAccessCost ← .ok <| access_cost codeAddress devm6.accessedAddresses
+      let devm7 ← .ok <| addAccessedAddress devm6 codeAddress
+      let ⟨disablePrecompiles, newCodeAddress, code, delegatedAccessGasCost, devm8⟩ ← .ok <|
+        accessDelegation devm7 codeAddress
+      let accessCost ← .ok <| preAccessCost + delegatedAccessGasCost
+      let ⟨msgCallCost, msgCallStipend⟩ ← .ok <|
+        calculateMsgCallGas
+          0
+          gas.toNat
+          devm8.gasLeft
+          extendCost
+          accessCost
+      let devm9 ← chargeGas (msgCallCost + extendCost) devm8
+      let devm10 ← .ok <|
+        devm9.memExtends
+          [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      genericCall
+        vb
+        sevm
+        devm10
+        msgCallStipend
+        sevm.value
+        sevm.caller
+        sevm.currentTarget
+        newCodeAddress
+        false
+        false
+        inputIndex
+        inputSize
+        outputIndex
+        outputSize
+        code
+        disablePrecompiles
+        lim
+    | .statcall, lim + 1 => do
+      let ⟨gas, devm1⟩ ← devm.pop
+      let ⟨target, devm2⟩ ← devm1.popToAdr
+      let ⟨inputIndex, devm3⟩ ← devm2.popToNat
+      let ⟨inputSize, devm4⟩ ← devm3.popToNat
+      let ⟨outputIndex, devm5⟩ ← devm4.popToNat
+      let ⟨outputSize, devm6⟩ ← devm5.popToNat
+      let extendCost ← .ok <|
+        devm6.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      let preAccessCost ← .ok <| access_cost target devm6.accessedAddresses
+      let devm7 ← .ok <| addAccessedAddress devm6 target
+      let ⟨disablePrecompiles, _, code, delegatedAccessGasCost, devm8⟩ ←
+        .ok <| accessDelegation devm7 target
+      let accessCost ← .ok <| preAccessCost + delegatedAccessGasCost
+      let ⟨msgCallCost, msgCallStipend⟩ ← .ok <|
+        calculateMsgCallGas
+          0
+          gas.toNat
+          devm8.gasLeft
+          extendCost
+          accessCost
+      let devm9 ← chargeGas (msgCallCost + extendCost) devm8
+      let devm10 ← .ok <|
+        devm9.memExtends
+          [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      genericCall
+        vb
+        sevm
+        devm10
+        msgCallStipend
+        0
+        sevm.currentTarget
+        target
+        target
+        true
+        true
+        inputIndex
+        inputSize
+        outputIndex
+        outputSize
+        code
+        disablePrecompiles
+        lim
+  termination_by _ lim => lim
+
   def Ninst.run (vb : Bool) (evm : Evm) :
       Ninst → Nat → Except (String × Devm) (Nat × Devm)
     | .push xs _, _ => do
-      let evm1 ← chargeGas (if xs = [] then gBase else gVerylow) evm.dyna
-      let evm2 ← evm1.push xs.toB256
-      .ok ⟨evm.pc + xs.length + 1, evm2⟩
-    | .reg r, _ => do
-      let devm ← r.run evm
-      .ok ⟨evm.pc + 1, devm⟩
+      let evm' ← chargeGas (if xs = [] then gBase else gVerylow) evm.dyna
+      (evm'.push xs.toB256).withPc (evm.pc + xs.length + 1)
+      -- let evm1 ← chargeGas (if xs = [] then gBase else gVerylow) evm.dyna
+      -- let evm2 ← evm1.push xs.toB256
+      -- .ok ⟨evm.pc + xs.length + 1, evm2⟩
+    | .reg r, _ => (r.run evm).withPc (evm.pc + 1)
+      -- let devm ← r.run evm
+      -- .ok ⟨evm.pc + 1, devm⟩
+    | .exec _, 0 => .error ⟨"RecursionLimit", evm.dyna⟩
+    | .exec x, lim + 1 =>
+      (Xinst.run vb evm.sta evm.dyna x lim).withPc (evm.pc + 1)
+      --let devm ← Xinst.run vb evm.sta evm.dyna x lim
+      --.ok ⟨evm.pc + 1, devm⟩
+  termination_by _ lim => lim
+
+
+/-
     | .exec _, 0 => .error ⟨"RecursionLimit", evm.dyna⟩
     | .exec .create, lim + 1 => do
       let ⟨endowment, devm1⟩ ← evm.dyna.pop
@@ -3099,7 +3370,7 @@ mutual
           disablePrecompiles
           lim
       .ok ⟨evm.pc + 1, devm11⟩
-  termination_by _ lim => lim
+  -/
 
   def exec : Bool → Evm → Nat → Execution
     | _, evm, 0 =>

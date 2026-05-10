@@ -249,7 +249,11 @@ def B256.add_eq (x y : B256) :
   x + y = ⟨x.1 + y.1 + if x.2 + y.2 < x.2 then 1 else 0, x.2 + y.2⟩ := rfl
 
 lemma B128.zero_add (n : B128) : 0 + n = n := by
-  rw [B128.add_eq]; simp [B128.zero_1, B128.zero_2]
+  rw [B128.add_eq];
+  simp only [
+    Prod.fst_zero, _root_.zero_add, Prod.snd_zero,
+    UInt64.not_lt_zero, ↓reduceIte, add_zero, Prod.mk.eta
+  ]
 
 lemma toB256_toNat (x : B256) : x.toNat.toB256 = x := by
   simp only [B256.toNat, Nat.toB256]
