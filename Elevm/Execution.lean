@@ -2655,6 +2655,11 @@ def Execution.withPc (pc : Nat) (exn : Execution) :
   let devm ← exn
   .ok ⟨pc, devm⟩
 
+def Ninst.size : Ninst → Nat
+  | reg _ => 1
+  | exec _ => 1
+  | push xs _ => xs.length + 1
+
 mutual
 
   def executeCode (vb : Bool) (msg : Msg) :
@@ -3082,21 +3087,19 @@ mutual
   termination_by _ lim => lim
 
   def Ninst.run (vb : Bool) (evm : Evm) :
-      Ninst → Nat → Except (String × Devm) (Nat × Devm)
+      --Ninst → Nat → Except (String × Devm) (Nat × Devm)
+      Ninst → Nat → Execution
     | .push xs _, _ => do
       let evm' ← chargeGas (if xs = [] then gBase else gVerylow) evm.dyna
-      (evm'.push xs.toB256).withPc (evm.pc + xs.length + 1)
-      -- let evm1 ← chargeGas (if xs = [] then gBase else gVerylow) evm.dyna
-      -- let evm2 ← evm1.push xs.toB256
-      -- .ok ⟨evm.pc + xs.length + 1, evm2⟩
-    | .reg r, _ => (r.run evm).withPc (evm.pc + 1)
-      -- let devm ← r.run evm
-      -- .ok ⟨evm.pc + 1, devm⟩
+      -- (evm'.push xs.toB256).withPc (evm.pc + xs.length + 1)
+      evm'.push xs.toB256 --).withPc (evm.pc + xs.length + 1)
+    | .reg r, _ =>
+      --(r.run evm).withPc (evm.pc + 1)
+      r.run evm
     | .exec _, 0 => .error ⟨"RecursionLimit", evm.dyna⟩
     | .exec x, lim + 1 =>
-      (Xinst.run vb evm.sta evm.dyna x lim).withPc (evm.pc + 1)
-      --let devm ← Xinst.run vb evm.sta evm.dyna x lim
-      --.ok ⟨evm.pc + 1, devm⟩
+      -- (Xinst.run vb evm.sta evm.dyna x lim).withPc (evm.pc + 1)
+      Xinst.run vb evm.sta evm.dyna x lim
   termination_by _ lim => lim
 
 
@@ -3382,9 +3385,8 @@ mutual
       -- showStep vb evm i
       match i with
       | .next n =>
-        let ⟨pc, devm⟩ ← n.run vb evm lim
-        -- exec vb evm lim
-        exec vb ⟨pc, evm.sta, devm⟩ lim
+        let devm ← n.run vb evm lim
+        exec vb ⟨evm.pc + n.size, evm.sta, devm⟩ lim
       | .jump j =>
         let ⟨pc, devm⟩ ← j.run evm
         exec vb ⟨pc, evm.sta, devm⟩ lim
