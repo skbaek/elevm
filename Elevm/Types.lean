@@ -943,8 +943,9 @@ def String.dropZeroes (s : String) : String :=
   | "" => "0"
   | s => s
 
-abbrev Stor := Std.TreeMap B256 B256 compare
+def Stor := Std.TreeMap B256 B256 compare
 
+def Stor.get (s : Stor) (k : B256) : B256 := s.getD k 0
 def Stor.empty : Stor := Std.TreeMap.empty
 
 lemma Std.TreeMap.eq_empty_of_isEmpty {α : Type u} {β : Type v}

@@ -1247,7 +1247,7 @@ def Devm.getAcct (devm : Devm) (a : Adr) : Acct :=
 def Devm.getBal (devm : Devm) (a : Adr) : B256 := (devm.getAcct a).bal
 def Devm.getCode (devm : Devm) (a : Adr) : ByteArray := (devm.getAcct a).code
 def Devm.getStorVal (devm : Devm) (adr : Adr) (key : B256) : B256 :=
-  (devm.getAcct adr).stor.getD key 0
+  (devm.getAcct adr).stor.get key
 
 def Stor.set (s : Stor) (k v : B256) : Stor :=
   if v = 0 then s.erase k else s.insert k v
@@ -1274,10 +1274,10 @@ def Devm.setTransVal (devm : Devm) (adr : Adr) (key val : B256) : Devm :=
   {devm with transientStorage := devm.transientStorage.setStorVal adr key val}
 
 def getOrigStorVal (sevm : Sevm) (adr : Adr) (key : B256) : B256 :=
-  (getOrigAcct sevm adr).stor.getD key 0
+  (getOrigAcct sevm adr).stor.get key
 
 def Devm.getTransVal (devm : Devm) (adr : Adr) (key : B256) : B256 :=
-  (devm.transientStorage.getD adr .empty).getD key 0
+  (devm.transientStorage.getD adr .empty).get key
 
 def memExtSize
   (current_size access_index access_size : Nat) : Nat :=
