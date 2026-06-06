@@ -1736,7 +1736,7 @@ instance : Inhabited Msg :=
       data := []
       codeAddress := .none
       code := .empty
-      depth := 0
+      depth := 1024
       shouldTransferValue := false
       isStatic := false
       accessedAddresses := .emptyWithCapacity
@@ -1775,7 +1775,7 @@ instance : Inhabited Sevm := ⟨
     data := []
     codeAddress := .none
     code := .empty
-    depth := 0
+    depth := 1024
     shouldTransferValue := false
     isStatic := false
     disablePrecompiles := false
@@ -2693,9 +2693,12 @@ mutual
         msg.tenv.transientStorage
       ⟩
     | lim + 1 => do
-      .assert
-        (msg.depth ≤ 1024)
-        ⟨"StackDepthLimitError", msg.benv.state, msg.benv.createdAccounts, msg.tenv.transientStorage⟩
+      /- In the original reference python implementation, there is a test here that
+         checks the msg.depth value, and fails with a "stack depth limit error" if
+         it is larger than 1024. However, due to the way processMessage is defiend
+         and used, there is no way msg.depth ever has a value larger than 1024, and
+         the error reporting is a dead code path that never will never get used, so
+         it is omitted here.  -/
       let benv ← msg.benvAfterTransfer
       let evm ← executeCode vb (msg.withBenv benv) lim
       if evm.error.isSome then
@@ -2746,7 +2749,8 @@ mutual
       let devm3 ← .ok <| {devm2 with returnData := []}
       let sender ← .ok <| devm3.state.get sevm.currentTarget
       if ( sender.bal < endowment ∨
-           sender.nonce = B64.max ∨ sevm.depth + 1 > 1024 ) then
+           sender.nonce = B64.max ∨
+           sevm.depth = 0 ) then
         return (← {devm3 with gasLeft := devm3.gasLeft + createMsgGas}.push 0)
       let devm4 ← .ok <| devm3.incrNonce sevm.currentTarget
       if
@@ -2765,7 +2769,7 @@ mutual
         data := []
         code := .mk <| .mk calldata
         currentTarget := newAddress
-        depth := sevm.depth + 1
+        depth := sevm.depth - 1
         codeAddress := .none
         shouldTransferValue := true
         isStatic := false
@@ -2800,7 +2804,7 @@ mutual
     | 0 => .error ⟨"RecursionLimit", devm⟩
     | lim + 1 => do
       let evm1 ← .ok {devm with returnData := []}
-      if (sevm.depth + 1 > 1024) then
+      if (sevm.depth = 0) then
         return (← ({evm1 with gasLeft := evm1.gasLeft + gas}).push 0)
       let calldata ← .ok <| evm1.memory.data.sliceD input_index input_size 0
       let (childMsg : Msg) ← .ok {
@@ -2814,7 +2818,7 @@ mutual
         data := calldata
         codeAddress := codeAddress
         code := code
-        depth := sevm.depth + 1
+        depth := sevm.depth - 1
         shouldTransferValue := shouldTransferValue
         isStatic := isStaticcall || sevm.isStatic
         accessedAddresses := evm1.accessedAddresses
@@ -4138,7 +4142,7 @@ def prepareMessage (benv: Benv) (tenv: Tenv) (tx: Tx) :
     value := tx.value.toB256,
     data := msgData,
     code := code,
-    depth := 0,
+    depth := 1024,
     currentTarget := currentTarget,
     codeAddress := codeAddress
     shouldTransferValue := true,
@@ -4453,7 +4457,7 @@ def processSystemTransactionMsg (benv : Benv) (tenv : Tenv)
     value := 0,
     data := data,
     code := code,
-    depth := 0,
+    depth := 1024,
     currentTarget := target,
     codeAddress := target,
     shouldTransferValue := false,
