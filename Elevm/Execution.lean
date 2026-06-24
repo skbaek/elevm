@@ -1377,6 +1377,58 @@ def Evm.contract (evm : Evm) : Adr := evm.sta.currentTarget
 def assertDynamic (sevm : Sevm) (devm : Devm) : Except (String × Devm) Unit :=
   Except.assert (!sevm.isStatic) ⟨s!"WriteInStaticContext", devm⟩
 
+def sstore_new_refund_counter (new_value : B256)
+    (original_value : B256) (current_value : B256) (rc : Int) : Int :=
+  if current_value ≠ new_value then
+    let rc' :=
+      if original_value ≠ 0 ∧ current_value ≠ 0 ∧ new_value = 0 then
+        rc + rSClear
+      else
+        rc
+    let rc'' :=
+      if original_value ≠ 0 ∧ current_value = 0 then
+        rc' - rSClear
+      else
+        rc'
+    if original_value = new_value then
+      if original_value = 0 then
+        rc'' + (gasStorageSet - gasWarmAccess)
+      else
+        rc'' + (gasStorageUpdate - gasColdSload - gasWarmAccess)
+    else
+      rc''
+  else rc
+
+-- def sstore_devm_update (new_value : B256)
+--     (original_value : B256) (current_value : B256) (devm3 : Devm) : Devm :=
+--   if current_value ≠ new_value then
+--     let devm' :=
+--       if original_value ≠ 0 ∧ current_value ≠ 0 ∧ new_value = 0 then
+--         {devm3 with refundCounter := devm3.refundCounter + rSClear}
+--       else
+--         devm3
+--     let devm'' :=
+--       if original_value ≠ 0 ∧ current_value = 0 then
+--         {devm' with refundCounter := devm'.refundCounter - rSClear}
+--       else
+--         devm'
+--     if original_value = new_value then
+--       if original_value = 0
+--       then
+--         {
+--           devm'' with
+--           refundCounter := devm''.refundCounter + (gasStorageSet - gasWarmAccess)
+--         }
+--       else
+--         {
+--           devm'' with
+--           refundCounter :=
+--             devm''.refundCounter + (gasStorageUpdate - gasColdSload - gasWarmAccess)
+--         }
+--     else
+--       devm''
+--   else devm3
+
 def Rinst.runCore
   (pc : Nat)
   (devm : Devm)
@@ -1589,13 +1641,13 @@ def Rinst.runCore
     let ct := sevm.currentTarget
     let original_value := getOrigStorVal sevm ct key
     let current_value := devm2.getStorVal ct key
-    let ⟨devm3, gasCost2⟩ :=
+    let ⟨devm3, gasCost2⟩ ← .ok <|
       if ⟨ct, key⟩ ∉ devm2.accessedStorageKeys then
         ( ⟨ addAccessedStorageKey devm2 ct key,
             gasColdSload ⟩ : Devm × Nat )
       else
         ⟨devm2, 0⟩
-    let gasCost3 :=
+    let gasCost3 ← .ok <|
       if original_value = current_value ∧ current_value ≠ new_value then
         if original_value = 0 then
           gasCost2 + gasStorageSet
@@ -1603,34 +1655,43 @@ def Rinst.runCore
           gasCost2 + (gasStorageUpdate - gasColdSload)
       else
         gasCost2 + gasWarmAccess
-    let devm4 :=
-      if current_value ≠ new_value then
-        let devm' :=
-          if original_value ≠ 0 ∧ current_value ≠ 0 ∧ new_value = 0 then
-            {devm3 with refundCounter := devm3.refundCounter + rSClear}
-          else
-            devm3
-        let devm'' :=
-          if original_value ≠ 0 ∧ current_value = 0 then
-            {devm' with refundCounter := devm'.refundCounter - rSClear}
-          else
-            devm'
-        if original_value = new_value then
-          if original_value = 0
-          then
-            {
-              devm'' with
-              refundCounter := devm''.refundCounter + (gasStorageSet - gasWarmAccess)
-            }
-          else
-            {
-              devm'' with
-              refundCounter :=
-                devm''.refundCounter + (gasStorageUpdate - gasColdSload - gasWarmAccess)
-            }
-        else
-          devm''
-      else devm3
+    let devm4 ← .ok <|
+      { devm3 with
+        refundCounter :=
+          sstore_new_refund_counter
+            new_value
+            original_value
+            current_value
+            devm3.refundCounter }
+
+       --sstore_devm_update new_value original_value current_value devm3
+    -- if current_value ≠ new_value then
+    --   let devm' :=
+    --     if original_value ≠ 0 ∧ current_value ≠ 0 ∧ new_value = 0 then
+    --       {devm3 with refundCounter := devm3.refundCounter + rSClear}
+    --     else
+    --       devm3
+    --   let devm'' :=
+    --     if original_value ≠ 0 ∧ current_value = 0 then
+    --       {devm' with refundCounter := devm'.refundCounter - rSClear}
+    --     else
+    --       devm'
+    --   if original_value = new_value then
+    --     if original_value = 0
+    --     then
+    --       {
+    --         devm'' with
+    --         refundCounter := devm''.refundCounter + (gasStorageSet - gasWarmAccess)
+    --       }
+    --     else
+    --       {
+    --         devm'' with
+    --         refundCounter :=
+    --           devm''.refundCounter + (gasStorageUpdate - gasColdSload - gasWarmAccess)
+    --       }
+    --   else
+    --     devm''
+    -- else devm3
     let devm5 ← chargeGas gasCost3 devm4
     assertDynamic sevm devm5
     .ok (devm5.setStorVal sevm.currentTarget key new_value)
