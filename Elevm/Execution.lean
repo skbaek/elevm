@@ -2111,46 +2111,53 @@ def liftToExecution (devm : Devm)
     .error ⟨err, devm'⟩
   | .ok devm' => .ok devm'
 
-def executeEcrecover (evm : Evm) : Execution := do
-  let data := evm.sta.data
-  let devm ← chargeGas gasEcrecover evm.dyna
-  let h := B8L.toB256 <| data.sliceD 0 32 (0x00 : B8)
-  let (some v : Option Bool) ←
-    .ok
-      ( match (B8L.toB256 <| data.sliceD 32 32 (0x00 : B8)) with
-        | 0x1B => some false
-        | 0x1C => some true
-        | _ => .none ) | .ok devm
-  let r := B8L.toB256 <| data.sliceD 64 32 (0x00 : B8)
-  let s := B8L.toB256 <| data.sliceD 96 32 (0x00 : B8)
-  if r = 0 ∨ s = 0 ∨
-     r ≥ secp256k1.curveOrder.toB256 ∨
-     s ≥ secp256k1.curveOrder.toB256 then
-    .ok devm
-  else
-    match secp256k1.recover h v r s with
-    | .none => .ok devm
-    | some adr => .ok {devm with output := adr.toB256.toB8L}
+inductive PrecompResult
+| error (msg : String) (cost : Nat)
+| ok (cost : Nat) (output : B8L)
 
-def executeSha256 (evm : Evm) : Execution := do
+def PrecompResult.chargeGas (cost : Nat) (evm : Evm)
+    (pr : PrecompResult) : PrecompResult :=
+  if cost ≤ evm.dyna.gasLeft then pr else .error "OutOfGasError" 0
+
+def executeEcrecover (evm : Evm) : PrecompResult :=
+  let data := evm.sta.data
+  PrecompResult.chargeGas gasEcrecover evm <|
+    let h := B8L.toB256 <| data.sliceD 0 32 (0x00 : B8)
+    let v_opt := match (B8L.toB256 <| data.sliceD 32 32 (0x00 : B8)) with
+                 | 0x1B => some false
+                 | 0x1C => some true
+                 | _ => none
+    match v_opt with
+    | none => .ok gasEcrecover []
+    | some v =>
+      let r := B8L.toB256 <| data.sliceD 64 32 (0x00 : B8)
+      let s := B8L.toB256 <| data.sliceD 96 32 (0x00 : B8)
+      if r = 0 ∨ s = 0 ∨
+         r ≥ secp256k1.curveOrder.toB256 ∨
+         s ≥ secp256k1.curveOrder.toB256 then
+        .ok gasEcrecover []
+      else
+        match secp256k1.recover h v r s with
+        | .none => .ok gasEcrecover []
+        | some adr => .ok gasEcrecover adr.toB256.toB8L
+
+def executeSha256 (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   let cost : Nat := 60 + (12 * (ceilDiv data.length 32))
-  let devm ← chargeGas cost evm.dyna
-  .ok {devm with output := (B8L.sha256 data).toB8L}
+  PrecompResult.chargeGas cost evm <| .ok cost (B8L.sha256 data).toB8L
 
-def executeRipemd160 (evm : Evm) : Execution := do
+def executeRipemd160 (evm : Evm) : PrecompResult :=
   let data : B8L := evm.sta.data
   let cost : Nat := 600 + (120 * (ceilDiv data.length 32))
-  let devm ← chargeGas cost evm.dyna
-  let hash : B8L := data.ripemd160
-  let output : B8L := B256.toB8L <| (B8L.toB256 <| hash)
-  .ok {devm with output := output}
+  PrecompResult.chargeGas cost evm <|
+    let hash : B8L := data.ripemd160
+    let output : B8L := B256.toB8L <| (B8L.toB256 <| hash)
+    .ok cost output
 
-def executeId (evm : Evm) : Execution := do
+def executeId (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   let cost := 15 + (3 * (ceilDiv data.length 32))
-  let devm ← chargeGas cost evm.dyna
-  .ok {devm with output := data}
+  PrecompResult.chargeGas cost evm <| .ok cost data
 
 def B8L.sliceToNat (data : B8L) (start : Nat) (length : Nat) : Nat :=
   match data.drop start with
@@ -2194,51 +2201,53 @@ def modexpGascost
   let cost := (mulComplexity * iterationCount) / 3
   max 200 cost
 
-def executeModexp (evm : Evm) : Execution := do
+def executeModexp (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   let baseLength : Nat := B8L.sliceToNat data 0 32
   let expLength : Nat := B8L.sliceToNat data 32 32
   let modulusLength : Nat := B8L.sliceToNat data 64 32
   let expHead : Nat := B8L.sliceToNat data (96 + baseLength) (min 32 expLength)
   let cost : Nat := modexpGascost baseLength modulusLength expLength expHead
-  let devm ← chargeGas cost evm.dyna
-  if baseLength = 0 ∧ modulusLength = 0
-    then return {devm with output := []}
-  let base : Nat := B8L.sliceToNat data 96 baseLength
-  let exp : Nat := B8L.sliceToNat data (96 + baseLength) expLength
-  let modulus : Nat := B8L.sliceToNat data (96 + baseLength + expLength) modulusLength
-  let output :=
-    if modulus = 0
-    then List.replicate modulusLength (0x00 : B8)
-    else (Nat.powMod base exp modulus).toB8L.pack modulusLength
-  .ok {devm with output := output}
+  PrecompResult.chargeGas cost evm <|
+    if baseLength = 0 ∧ modulusLength = 0 then .ok cost []
+    else
+      let base : Nat := B8L.sliceToNat data 96 baseLength
+      let exp : Nat := B8L.sliceToNat data (96 + baseLength) expLength
+      let modulus : Nat := B8L.sliceToNat data (96 + baseLength + expLength) modulusLength
+      let output :=
+        if modulus = 0 then List.replicate modulusLength (0x00 : B8)
+        else (Nat.powMod base exp modulus).toB8L.pack modulusLength
+      .ok cost output
 
-def executeEcadd (evm : Evm) : Execution := do
+def executeEcadd (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  let devm ← chargeGas 150 evm.dyna
-  let x0 : Nat := B8L.toNat <| data.sliceD 0 32 (0 : B8)
-  let y0 : Nat := B8L.toNat <| data.sliceD 32 32 (0 : B8)
-  let x1 : Nat := B8L.toNat <| data.sliceD 64 32 (0 : B8)
-  let y1 : Nat := B8L.toNat <| data.sliceD 96 32 (0 : B8)
-  .assert
-    ( x0 < altBn128Prime ∧ y0 < altBn128Prime ∧
-      x1 < altBn128Prime ∧ x1 < altBn128Prime )
-    ⟨"OutOfGasError", devm⟩
-  let p0 ← (BNP.mk? x0 y0).toExcept ⟨"OutOfGasError", devm⟩
-  let p1 ← (BNP.mk? x1 y1).toExcept ⟨"OutOfGasError", devm⟩
-  .ok {devm with output := BNP.toB8L (p0 + p1)}
+  PrecompResult.chargeGas 150 evm <|
+    let x0 : Nat := B8L.toNat <| data.sliceD 0 32 (0 : B8)
+    let y0 : Nat := B8L.toNat <| data.sliceD 32 32 (0 : B8)
+    let x1 : Nat := B8L.toNat <| data.sliceD 64 32 (0 : B8)
+    let y1 : Nat := B8L.toNat <| data.sliceD 96 32 (0 : B8)
+    if ¬ (x0 < altBn128Prime ∧ y0 < altBn128Prime ∧ x1 < altBn128Prime ∧ x1 < altBn128Prime) then
+      .error "OutOfGasError" 150
+    else
+      match BNP.mk? x0 y0 with
+      | none => .error "OutOfGasError" 150
+      | some p0 =>
+        match BNP.mk? x1 y1 with
+        | none => .error "OutOfGasError" 150
+        | some p1 => .ok 150 (BNP.toB8L (p0 + p1))
 
-def executeEcmul (evm : Evm) : Execution := do
+def executeEcmul (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  let devm ← chargeGas 6000 evm.dyna
-  let x : Nat := B8L.toNat <| data.sliceD 0 32 (0 : B8)
-  let y : Nat := B8L.toNat <| data.sliceD 32 32 (0 : B8)
-  let n : Nat := B8L.toNat <| data.sliceD 64 32 (0 : B8)
-  .assert
-    (x < altBn128Prime ∧ y < altBn128Prime)
-    ⟨"OutOfGasError", devm⟩
-  let p ← (BNP.mk? x y).toExcept ⟨"OutOfGasError", devm⟩
-  .ok {devm with output := BNP.toB8L (p * n)}
+  PrecompResult.chargeGas 6000 evm <|
+    let x : Nat := B8L.toNat <| data.sliceD 0 32 (0 : B8)
+    let y : Nat := B8L.toNat <| data.sliceD 32 32 (0 : B8)
+    let n : Nat := B8L.toNat <| data.sliceD 64 32 (0 : B8)
+    if ¬ (x < altBn128Prime ∧ y < altBn128Prime) then
+      .error "OutOfGasError" 6000
+    else
+      match BNP.mk? x y with
+      | none => .error "OutOfGasError" 6000
+      | some p => .ok 6000 (BNP.toB8L (p * n))
 
 def b2R1 : B64 := 32
 def b2R2 : B64 := 24
@@ -2384,23 +2393,28 @@ def bCompress (numRounds : Nat)
   List.flatten <| resultMsgWords.map (fun n => n.toB8L.reverse.takeD 8 (0x00 : B8))
 
 -- blake2f
-def executeBlake2F (evm : Evm) : Execution := do
+def executeBlake2F (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  .assert (data.length = 213) ⟨"InvalidParameter", evm.dyna⟩
-  let ⟨rounds, h, m, t0, t1, fn⟩ := getBlake2Parameters data
-  let devm ← chargeGas (gasBlake2PerRound * rounds) evm.dyna
-  let f ←
-    match fn with
-    | 0 => .ok false
-    | 1 => .ok true
-    | _ => .error ⟨"InvalidParameter", devm⟩
-  let output ← (bCompress rounds h m t0 t1 f).toExcept ⟨"bCompress failed", devm⟩
-  .ok {devm with output := output}
+  if data.length ≠ 213 then .error "InvalidParameter" 0
+  else
+    let ⟨rounds, h, m, t0, t1, fn⟩ := getBlake2Parameters data
+    let cost := gasBlake2PerRound * rounds
+    PrecompResult.chargeGas cost evm <|
+      match fn with
+      | 0 =>
+        match bCompress rounds h m t0 t1 false with
+        | some output => .ok cost output
+        | none => .error "bCompress failed" cost
+      | 1 =>
+        match bCompress rounds h m t0 t1 true with
+        | some output => .ok cost output
+        | none => .error "bCompress failed" cost
+      | _ => .error "InvalidParameter" cost
 
-def executePointEval (evm : Evm) : Execution := do
+def executePointEval (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  .assert (data.length = 192) ⟨"KZGProofError", evm.dyna⟩
-  .error ⟨"UNIMP : executePointEval", evm.dyna⟩
+  if data.length ≠ 192 then .error "KZGProofError" 0
+  else .error "UNIMP : executePointEval" 0
 
 def gasBlsG1Mul : Nat := 12000
 def gasBlsG1Map : Nat := 5500
@@ -2409,60 +2423,61 @@ def gasBlsG2Mul : Nat := 22500
 def gasBlsG2Map : Nat := 23800
 
 -- bls12_g1_add
-def executeBls12G1Add (evm : Evm) : Execution := do
+def executeBls12G1Add (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  .assert (data.length = 256) ⟨"InvalidParameter", evm.dyna⟩
-  .error ⟨"BLS12 G1 Add not implemented yet", evm.dyna⟩
+  if data.length ≠ 256 then .error "InvalidParameter" 0
+  else .error "BLS12 G1 Add not implemented yet" 0
 
 -- bls12_g1_msm
-def executeBls12G1Msm (evm : Evm) : Execution := do
+def executeBls12G1Msm (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   if data.length = 0 ∨ data.length % lengthPerPair ≠ 0 then
-    .error ⟨s!"InvalidParameter : {data.length} is not a valid input lnegth", evm.dyna⟩
-  let k := data.length / lengthPerPair
-  let discount :=
-    List.getD g1KDiscount (k - 1) g1MaxDiscount
-  let gasCost := (k * gasBlsG1Mul * discount) / 1000
-  let devm ← chargeGas gasCost evm.dyna
-  .error ⟨"BLS12 G1 msm not implemented yet", devm⟩
+    .error s!"InvalidParameter : {data.length} is not a valid input lnegth" 0
+  else
+    let k := data.length / lengthPerPair
+    let discount := List.getD g1KDiscount (k - 1) g1MaxDiscount
+    let gasCost := (k * gasBlsG1Mul * discount) / 1000
+    PrecompResult.chargeGas gasCost evm <|
+      .error "BLS12 G1 msm not implemented yet" gasCost
 
 -- bls12_g2_add
-def executeBls12G2Add (evm : Evm) : Execution := do
+def executeBls12G2Add (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  if data.length ≠ 512 then
-    .error ⟨"InvalidParameter", evm.dyna⟩
-  let devm ← chargeGas gasBlsG2Add evm.dyna
-  .error ⟨"BLS12 G2 add not implemented yet", devm⟩
+  if data.length ≠ 512 then .error "InvalidParameter" 0
+  else
+    PrecompResult.chargeGas gasBlsG2Add evm <|
+      .error "BLS12 G2 add not implemented yet" gasBlsG2Add
 
 -- def bls12_g2_msm
-def executeBls12G2Msm (evm : Evm) : Execution := do
+def executeBls12G2Msm (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   if data.length = 0 ∨ data.length % lengthPerPair ≠ 0 then
-    .error ⟨s!"InvalidParameter : {data.length} is not a valid input length", evm.dyna⟩
-  let k := data.length / lengthPerPair
-  let discount :=
-    List.getD g2KDiscount (k - 1) g2MaxDiscount
-  let gasCost := (k * gasBlsG2Mul * discount) / 1000
-  let devm ← chargeGas gasCost evm.dyna
-  .error ⟨"BLS12 G2 msm not implemented yet", devm⟩
+    .error s!"InvalidParameter : {data.length} is not a valid input length" 0
+  else
+    let k := data.length / lengthPerPair
+    let discount := List.getD g2KDiscount (k - 1) g2MaxDiscount
+    let gasCost := (k * gasBlsG2Mul * discount) / 1000
+    PrecompResult.chargeGas gasCost evm <|
+      .error "BLS12 G2 msm not implemented yet" gasCost
 
 -- def bls12_pairing(evm : Evm) -> None :
-def executeBls12Pairing (evm : Evm) : Execution := do
+def executeBls12Pairing (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   if data.length = 0 ∨ data.length % 384 ≠ 0 then
-    .error ⟨s!"InvalidParameter : {data.length} is not a valid input length", evm.dyna⟩
-  let k := data.length / 384
-  let gasCost := (32600 * k + 37700)
-  let devm ← chargeGas gasCost evm.dyna
-  .error ⟨"BLS12 pairing not implemented yet", devm⟩
+    .error s!"InvalidParameter : {data.length} is not a valid input length" 0
+  else
+    let k := data.length / 384
+    let gasCost := (32600 * k + 37700)
+    PrecompResult.chargeGas gasCost evm <|
+      .error "BLS12 pairing not implemented yet" gasCost
 
 -- def bls12_map_fp_to_g1(evm : Evm) -> None :
-def executeBls12MapFpToG1 (evm : Evm) : Execution := do
+def executeBls12MapFpToG1 (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  if data.length ≠ 64 then
-    .error ⟨"InvalidParameter", evm.dyna⟩
-  let devm ← chargeGas gasBlsG1Map evm.dyna
-  .error ⟨"BLS12 map FP-to-G1 Msm not implemented yet", devm⟩
+  if data.length ≠ 64 then .error "InvalidParameter" 0
+  else
+    PrecompResult.chargeGas gasBlsG1Map evm <|
+      .error "BLS12 map FP-to-G1 Msm not implemented yet" gasBlsG1Map
 
 def catchWithOOG {ξ : Type U} (devm : Devm) (cond : String → Bool) :
   Except String ξ → Except (String × Devm) ξ
@@ -2504,36 +2519,46 @@ def B8L.toExStrBNP2 (data : B8L) : Except String BNP2 := do
   (EllipticCurve.mk? (BNF2.mk x0 x1) (BNF2.mk y0 y1)).toExcept
     "InvalidParameter : point is not on curve"
 
+def catchWithOOGPrecomp {ξ} (cost : Nat) (cond : String → Bool) :
+  Except String ξ → Except (String × Nat) ξ
+  | .ok v => .ok v
+  | .error e => if cond e then .error ⟨"OutOfGasError", cost⟩ else .error ⟨e, cost⟩
+
 -- def bls12_map_fp2_to_g2(evm : Evm) -> None :
-def executeBls12MapFp2ToG2 (evm : Evm) : Execution := do
+def executeBls12MapFp2ToG2 (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  .assert (data.length = 128) ⟨"InvalidParameter", evm.dyna⟩
-  let devm ← chargeGas gasBlsG2Map evm.dyna
-  .error ⟨"main logic of BLS12 map FP2-to_G2 not implemented yet", devm⟩
+  if data.length ≠ 128 then .error "InvalidParameter" 0
+  else
+    PrecompResult.chargeGas gasBlsG2Map evm <|
+      .error "main logic of BLS12 map FP2-to_G2 not implemented yet" gasBlsG2Map
 
-def executePairingCheck (evm : Evm) : Execution := do
+def executePairingCheck (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  let devm ← chargeGas ((34000 * (data.length / 192)) + 45000) evm.dyna
-  .assert (data.length % 192 = 0) ⟨"OutOfGasError", devm⟩
-  let mut result : BNF12 := 1
-  for i in List.range (data.length / 192) do
-    let p : BNP ←
-      catchWithOOG devm (hasErrorType · "InvalidParameter") <|
-        B8L.toExStrBNP (data.slice! (i * 192) 64)
-    let q : BNP2 ←
-      catchWithOOG devm (hasErrorType · "InvalidParameter") <|
-        B8L.toExStrBNP2 (data.slice! (i * 192 + 64) 128)
-    .assert (p * altBn128CurveOrder = ⟨0, 0⟩) ⟨"OutOfGasError", devm⟩
-    .assert (q * altBn128CurveOrder = ⟨0, 0⟩) ⟨"OutOfGasError", devm⟩
-    let pairResult ← (pairing q p).toExcept ⟨"ValueError", devm⟩
-    result := result * pairResult
-  let output : B8L :=
-    if result = 1
-    then (1 : Nat).toB256.toB8L
-    else (0 : Nat).toB256.toB8L
-  .ok {devm with output := output}
+  let cost := (34000 * (data.length / 192)) + 45000
+  PrecompResult.chargeGas cost evm <|
+    let inner : Except (String × Nat) (Nat × B8L) := do
+      if data.length % 192 ≠ 0 then throw ⟨"OutOfGasError", cost⟩
+      let mut result : BNF12 := 1
+      for i in List.range (data.length / 192) do
+        let p : BNP ←
+          catchWithOOGPrecomp cost (hasErrorType · "InvalidParameter") <|
+            B8L.toExStrBNP (data.slice! (i * 192) 64)
+        let q : BNP2 ←
+          catchWithOOGPrecomp cost (hasErrorType · "InvalidParameter") <|
+            B8L.toExStrBNP2 (data.slice! (i * 192 + 64) 128)
+        if p * altBn128CurveOrder ≠ ⟨0, 0⟩ then throw ⟨"OutOfGasError", cost⟩
+        if q * altBn128CurveOrder ≠ ⟨0, 0⟩ then throw ⟨"OutOfGasError", cost⟩
+        let pairResult ← match pairing q p with
+                         | some v => pure v
+                         | none => throw ⟨"ValueError", cost⟩
+        result := result * pairResult
+      let output : B8L := if result = 1 then (1 : Nat).toB256.toB8L else (0 : Nat).toB256.toB8L
+      pure (cost, output)
+    match inner with
+    | .ok ⟨cost, output⟩ => .ok cost output
+    | .error ⟨msg, cost⟩ => .error msg cost
 
-def executePrecomp (evm : Evm) : Adr → Execution
+def precompileRun (evm : Evm) : Adr → PrecompResult
   | 1 => executeEcrecover evm -- 0x1
   | 2 => executeSha256 evm -- 0x2
   | 3 => executeRipemd160 evm -- 0x3
@@ -2551,7 +2576,15 @@ def executePrecomp (evm : Evm) : Adr → Execution
   | 15 => executeBls12Pairing evm -- 0xF
   | 16 => executeBls12MapFpToG1 evm -- 0x10
   | 17 => executeBls12MapFp2ToG2 evm -- 0x11
-  | n => .error ⟨s!"ERROR : precompiled contract {n} does not exist", evm.dyna⟩
+  | n => .error s!"ERROR : precompiled contract {n} does not exist" 0
+
+def applyPrecompResult (evm : Evm) (res : PrecompResult) : Execution :=
+  match res with
+  | .error msg cost => .error ⟨msg, { evm.dyna with gasLeft := evm.dyna.gasLeft - cost }⟩
+  | .ok cost output => .ok { evm.dyna with gasLeft := evm.dyna.gasLeft - cost, output := output }
+
+def executePrecomp (evm : Evm) (adr : Adr) : Execution :=
+  applyPrecompResult evm (precompileRun evm adr)
 
 def Inst.toOpString : Inst → String
   | .next n => n.toOpString
