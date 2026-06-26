@@ -2116,12 +2116,12 @@ inductive PrecompResult
 | ok (cost : Nat) (output : B8L)
 
 def PrecompResult.chargeGas (cost : Nat) (evm : Evm)
-    (pr : PrecompResult) : PrecompResult :=
-  if cost ≤ evm.dyna.gasLeft then pr else .error "OutOfGasError" 0
+    (pr : Unit → PrecompResult) : PrecompResult :=
+  if cost ≤ evm.dyna.gasLeft then pr () else .error "OutOfGasError" 0
 
 def executeEcrecover (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  PrecompResult.chargeGas gasEcrecover evm <|
+  PrecompResult.chargeGas gasEcrecover evm fun () =>
     let h := B8L.toB256 <| data.sliceD 0 32 (0x00 : B8)
     let v_opt := match (B8L.toB256 <| data.sliceD 32 32 (0x00 : B8)) with
                  | 0x1B => some false
@@ -2144,12 +2144,12 @@ def executeEcrecover (evm : Evm) : PrecompResult :=
 def executeSha256 (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   let cost : Nat := 60 + (12 * (ceilDiv data.length 32))
-  PrecompResult.chargeGas cost evm <| .ok cost (B8L.sha256 data).toB8L
+  PrecompResult.chargeGas cost evm fun () => .ok cost (B8L.sha256 data).toB8L
 
 def executeRipemd160 (evm : Evm) : PrecompResult :=
   let data : B8L := evm.sta.data
   let cost : Nat := 600 + (120 * (ceilDiv data.length 32))
-  PrecompResult.chargeGas cost evm <|
+  PrecompResult.chargeGas cost evm fun () =>
     let hash : B8L := data.ripemd160
     let output : B8L := B256.toB8L <| (B8L.toB256 <| hash)
     .ok cost output
@@ -2157,7 +2157,7 @@ def executeRipemd160 (evm : Evm) : PrecompResult :=
 def executeId (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   let cost := 15 + (3 * (ceilDiv data.length 32))
-  PrecompResult.chargeGas cost evm <| .ok cost data
+  PrecompResult.chargeGas cost evm fun () => .ok cost data
 
 def B8L.sliceToNat (data : B8L) (start : Nat) (length : Nat) : Nat :=
   match data.drop start with
@@ -2208,7 +2208,7 @@ def executeModexp (evm : Evm) : PrecompResult :=
   let modulusLength : Nat := B8L.sliceToNat data 64 32
   let expHead : Nat := B8L.sliceToNat data (96 + baseLength) (min 32 expLength)
   let cost : Nat := modexpGascost baseLength modulusLength expLength expHead
-  PrecompResult.chargeGas cost evm <|
+  PrecompResult.chargeGas cost evm fun () =>
     if baseLength = 0 ∧ modulusLength = 0 then .ok cost []
     else
       let base : Nat := B8L.sliceToNat data 96 baseLength
@@ -2221,7 +2221,7 @@ def executeModexp (evm : Evm) : PrecompResult :=
 
 def executeEcadd (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  PrecompResult.chargeGas 150 evm <|
+  PrecompResult.chargeGas 150 evm fun () =>
     let x0 : Nat := B8L.toNat <| data.sliceD 0 32 (0 : B8)
     let y0 : Nat := B8L.toNat <| data.sliceD 32 32 (0 : B8)
     let x1 : Nat := B8L.toNat <| data.sliceD 64 32 (0 : B8)
@@ -2238,7 +2238,7 @@ def executeEcadd (evm : Evm) : PrecompResult :=
 
 def executeEcmul (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  PrecompResult.chargeGas 6000 evm <|
+  PrecompResult.chargeGas 6000 evm fun () =>
     let x : Nat := B8L.toNat <| data.sliceD 0 32 (0 : B8)
     let y : Nat := B8L.toNat <| data.sliceD 32 32 (0 : B8)
     let n : Nat := B8L.toNat <| data.sliceD 64 32 (0 : B8)
@@ -2399,7 +2399,7 @@ def executeBlake2F (evm : Evm) : PrecompResult :=
   else
     let ⟨rounds, h, m, t0, t1, fn⟩ := getBlake2Parameters data
     let cost := gasBlake2PerRound * rounds
-    PrecompResult.chargeGas cost evm <|
+    PrecompResult.chargeGas cost evm fun () =>
       match fn with
       | 0 =>
         match bCompress rounds h m t0 t1 false with
@@ -2437,7 +2437,7 @@ def executeBls12G1Msm (evm : Evm) : PrecompResult :=
     let k := data.length / lengthPerPair
     let discount := List.getD g1KDiscount (k - 1) g1MaxDiscount
     let gasCost := (k * gasBlsG1Mul * discount) / 1000
-    PrecompResult.chargeGas gasCost evm <|
+    PrecompResult.chargeGas gasCost evm fun () =>
       .error "BLS12 G1 msm not implemented yet" gasCost
 
 -- bls12_g2_add
@@ -2445,7 +2445,7 @@ def executeBls12G2Add (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   if data.length ≠ 512 then .error "InvalidParameter" 0
   else
-    PrecompResult.chargeGas gasBlsG2Add evm <|
+    PrecompResult.chargeGas gasBlsG2Add evm fun () =>
       .error "BLS12 G2 add not implemented yet" gasBlsG2Add
 
 -- def bls12_g2_msm
@@ -2457,7 +2457,7 @@ def executeBls12G2Msm (evm : Evm) : PrecompResult :=
     let k := data.length / lengthPerPair
     let discount := List.getD g2KDiscount (k - 1) g2MaxDiscount
     let gasCost := (k * gasBlsG2Mul * discount) / 1000
-    PrecompResult.chargeGas gasCost evm <|
+    PrecompResult.chargeGas gasCost evm fun () =>
       .error "BLS12 G2 msm not implemented yet" gasCost
 
 -- def bls12_pairing(evm : Evm) -> None :
@@ -2468,7 +2468,7 @@ def executeBls12Pairing (evm : Evm) : PrecompResult :=
   else
     let k := data.length / 384
     let gasCost := (32600 * k + 37700)
-    PrecompResult.chargeGas gasCost evm <|
+    PrecompResult.chargeGas gasCost evm fun () =>
       .error "BLS12 pairing not implemented yet" gasCost
 
 -- def bls12_map_fp_to_g1(evm : Evm) -> None :
@@ -2476,7 +2476,7 @@ def executeBls12MapFpToG1 (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   if data.length ≠ 64 then .error "InvalidParameter" 0
   else
-    PrecompResult.chargeGas gasBlsG1Map evm <|
+    PrecompResult.chargeGas gasBlsG1Map evm fun () =>
       .error "BLS12 map FP-to-G1 Msm not implemented yet" gasBlsG1Map
 
 def catchWithOOG {ξ : Type U} (devm : Devm) (cond : String → Bool) :
@@ -2529,13 +2529,13 @@ def executeBls12MapFp2ToG2 (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   if data.length ≠ 128 then .error "InvalidParameter" 0
   else
-    PrecompResult.chargeGas gasBlsG2Map evm <|
+    PrecompResult.chargeGas gasBlsG2Map evm fun () =>
       .error "main logic of BLS12 map FP2-to_G2 not implemented yet" gasBlsG2Map
 
 def executePairingCheck (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   let cost := (34000 * (data.length / 192)) + 45000
-  PrecompResult.chargeGas cost evm <|
+  PrecompResult.chargeGas cost evm fun () =>
     let inner : Except (String × Nat) (Nat × B8L) := do
       if data.length % 192 ≠ 0 then throw ⟨"OutOfGasError", cost⟩
       let mut result : BNF12 := 1
