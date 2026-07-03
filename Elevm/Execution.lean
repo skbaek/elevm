@@ -1399,36 +1399,6 @@ def sstore_new_refund_counter (new_value : B256)
       rc''
   else rc
 
--- def sstore_devm_update (new_value : B256)
---     (original_value : B256) (current_value : B256) (devm3 : Devm) : Devm :=
---   if current_value ≠ new_value then
---     let devm' :=
---       if original_value ≠ 0 ∧ current_value ≠ 0 ∧ new_value = 0 then
---         {devm3 with refundCounter := devm3.refundCounter + rSClear}
---       else
---         devm3
---     let devm'' :=
---       if original_value ≠ 0 ∧ current_value = 0 then
---         {devm' with refundCounter := devm'.refundCounter - rSClear}
---       else
---         devm'
---     if original_value = new_value then
---       if original_value = 0
---       then
---         {
---           devm'' with
---           refundCounter := devm''.refundCounter + (gasStorageSet - gasWarmAccess)
---         }
---       else
---         {
---           devm'' with
---           refundCounter :=
---             devm''.refundCounter + (gasStorageUpdate - gasColdSload - gasWarmAccess)
---         }
---     else
---       devm''
---   else devm3
-
 def Rinst.runCore
   (pc : Nat)
   (devm : Devm)
@@ -1663,35 +1633,6 @@ def Rinst.runCore
             original_value
             current_value
             devm3.refundCounter }
-
-       --sstore_devm_update new_value original_value current_value devm3
-    -- if current_value ≠ new_value then
-    --   let devm' :=
-    --     if original_value ≠ 0 ∧ current_value ≠ 0 ∧ new_value = 0 then
-    --       {devm3 with refundCounter := devm3.refundCounter + rSClear}
-    --     else
-    --       devm3
-    --   let devm'' :=
-    --     if original_value ≠ 0 ∧ current_value = 0 then
-    --       {devm' with refundCounter := devm'.refundCounter - rSClear}
-    --     else
-    --       devm'
-    --   if original_value = new_value then
-    --     if original_value = 0
-    --     then
-    --       {
-    --         devm'' with
-    --         refundCounter := devm''.refundCounter + (gasStorageSet - gasWarmAccess)
-    --       }
-    --     else
-    --       {
-    --         devm'' with
-    --         refundCounter :=
-    --           devm''.refundCounter + (gasStorageUpdate - gasColdSload - gasWarmAccess)
-    --       }
-    --   else
-    --     devm''
-    -- else devm3
     let devm5 ← chargeGas gasCost3 devm4
     assertDynamic sevm devm5
     .ok (devm5.setStorVal sevm.currentTarget key new_value)
@@ -2532,28 +2473,49 @@ def executeBls12MapFp2ToG2 (evm : Evm) : PrecompResult :=
     PrecompResult.chargeGas gasBlsG2Map evm fun () =>
       .error "main logic of BLS12 map FP2-to_G2 not implemented yet" gasBlsG2Map
 
+def executePairingCheckInner (data : B8L) (cost : Nat) :
+    Except (String × Nat) (Nat × B8L) := do
+  if data.length % 192 ≠ 0 then throw ⟨"OutOfGasError", cost⟩
+  let mut result : BNF12 := 1
+  for i in List.range (data.length / 192) do
+    let p : BNP ←
+      catchWithOOGPrecomp cost (hasErrorType · "InvalidParameter") <|
+        B8L.toExStrBNP (data.slice! (i * 192) 64)
+    let q : BNP2 ←
+      catchWithOOGPrecomp cost (hasErrorType · "InvalidParameter") <|
+        B8L.toExStrBNP2 (data.slice! (i * 192 + 64) 128)
+    if p * altBn128CurveOrder ≠ ⟨0, 0⟩ then throw ⟨"OutOfGasError", cost⟩
+    if q * altBn128CurveOrder ≠ ⟨0, 0⟩ then throw ⟨"OutOfGasError", cost⟩
+    let pairResult ← match pairing q p with
+                     | some v => pure v
+                     | none => throw ⟨"ValueError", cost⟩
+    result := result * pairResult
+  let output : B8L := if result = 1 then (1 : Nat).toB256.toB8L else (0 : Nat).toB256.toB8L
+  pure (cost, output)
+
 def executePairingCheck (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   let cost := (34000 * (data.length / 192)) + 45000
   PrecompResult.chargeGas cost evm fun () =>
-    let inner : Except (String × Nat) (Nat × B8L) := do
-      if data.length % 192 ≠ 0 then throw ⟨"OutOfGasError", cost⟩
-      let mut result : BNF12 := 1
-      for i in List.range (data.length / 192) do
-        let p : BNP ←
-          catchWithOOGPrecomp cost (hasErrorType · "InvalidParameter") <|
-            B8L.toExStrBNP (data.slice! (i * 192) 64)
-        let q : BNP2 ←
-          catchWithOOGPrecomp cost (hasErrorType · "InvalidParameter") <|
-            B8L.toExStrBNP2 (data.slice! (i * 192 + 64) 128)
-        if p * altBn128CurveOrder ≠ ⟨0, 0⟩ then throw ⟨"OutOfGasError", cost⟩
-        if q * altBn128CurveOrder ≠ ⟨0, 0⟩ then throw ⟨"OutOfGasError", cost⟩
-        let pairResult ← match pairing q p with
-                         | some v => pure v
-                         | none => throw ⟨"ValueError", cost⟩
-        result := result * pairResult
-      let output : B8L := if result = 1 then (1 : Nat).toB256.toB8L else (0 : Nat).toB256.toB8L
-      pure (cost, output)
+    -- let inner : Except (String × Nat) (Nat × B8L) := do
+    --   if data.length % 192 ≠ 0 then throw ⟨"OutOfGasError", cost⟩
+    --   let mut result : BNF12 := 1
+    --   for i in List.range (data.length / 192) do
+    --     let p : BNP ←
+    --       catchWithOOGPrecomp cost (hasErrorType · "InvalidParameter") <|
+    --         B8L.toExStrBNP (data.slice! (i * 192) 64)
+    --     let q : BNP2 ←
+    --       catchWithOOGPrecomp cost (hasErrorType · "InvalidParameter") <|
+    --         B8L.toExStrBNP2 (data.slice! (i * 192 + 64) 128)
+    --     if p * altBn128CurveOrder ≠ ⟨0, 0⟩ then throw ⟨"OutOfGasError", cost⟩
+    --     if q * altBn128CurveOrder ≠ ⟨0, 0⟩ then throw ⟨"OutOfGasError", cost⟩
+    --     let pairResult ← match pairing q p with
+    --                      | some v => pure v
+    --                      | none => throw ⟨"ValueError", cost⟩
+    --     result := result * pairResult
+    --   let output : B8L := if result = 1 then (1 : Nat).toB256.toB8L else (0 : Nat).toB256.toB8L
+    --   pure (cost, output)
+    let inner := executePairingCheckInner data cost
     match inner with
     | .ok ⟨cost, output⟩ => .ok cost output
     | .error ⟨msg, cost⟩ => .error msg cost
