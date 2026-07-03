@@ -7,7 +7,7 @@ package «elevm» where
   ]
 
 require mathlib from git
-  "https://github.com/leanprover-community/mathlib4.git" @ "10061bf49d6d842b2099878901410ef3b6a393c2"
+  "https://github.com/leanprover-community/mathlib4.git" @ "v4.23.0"
 
 @[default_target]
 lean_lib «Elevm» where
