@@ -2716,6 +2716,40 @@ def Ninst.size : Ninst → Nat
   | exec _ => 1
   | push xs _ => xs.length + 1
 
+-- the message passed to the sub-call performed by a call-type instruction.
+-- factored out as a named definition to prevent context blowup in proofs.
+def callMsg
+    (sevm: Sevm)
+    (evm1: Devm)
+    (gas: Nat)
+    (value: B256)
+    (caller: Adr)
+    (target: Adr)
+    (codeAddress: Adr)
+    (shouldTransferValue: Bool)
+    (isStaticcall: Bool)
+    (calldata: B8L)
+    (code : ByteArray)
+    (disablePrecompiles: Bool) : Msg :=
+  {
+    benv := {state := evm1.state, createdAccounts := evm1.createdAccounts, stat := sevm.benvStat}
+    tenv := {transientStorage := evm1.transientStorage, stat := sevm.tenvStat}
+    caller := caller
+    target := target
+    gas := gas
+    currentTarget := target
+    value := value
+    data := calldata
+    codeAddress := codeAddress
+    code := code
+    depth := sevm.depth - 1
+    shouldTransferValue := shouldTransferValue
+    isStatic := isStaticcall || sevm.isStatic
+    accessedAddresses := evm1.accessedAddresses
+    accessedStorageKeys := evm1.accessedStorageKeys
+    disablePrecompiles := disablePrecompiles
+  }
+
 mutual
 
   def executeCode (vb : Bool) (msg : Msg) :
@@ -2859,28 +2893,13 @@ mutual
     (disablePrecompiles: Bool) : Nat → Execution
     | 0 => .error ⟨"RecursionLimit", devm⟩
     | lim + 1 => do
-      let evm1 ← .ok {devm with returnData := []}
+      let evm1 ← .ok (devm.withReturnData [])
       if (sevm.depth = 0) then
-        return (← ({evm1 with gasLeft := evm1.gasLeft + gas}).push 0)
+        return (← (evm1.withGasLeft (evm1.gasLeft + gas)).push 0)
       let calldata ← .ok <| evm1.memory.data.sliceD input_index input_size 0
-      let (childMsg : Msg) ← .ok {
-        benv := {state := evm1.state, createdAccounts := evm1.createdAccounts, stat := sevm.benvStat} --evm1.benv
-        tenv := {transientStorage := evm1.transientStorage, stat := sevm.tenvStat} -- evm1.tenv
-        caller := caller
-        target := target
-        gas := gas
-        currentTarget := target
-        value := value
-        data := calldata
-        codeAddress := codeAddress
-        code := code
-        depth := sevm.depth - 1
-        shouldTransferValue := shouldTransferValue
-        isStatic := isStaticcall || sevm.isStatic
-        accessedAddresses := evm1.accessedAddresses
-        accessedStorageKeys := evm1.accessedStorageKeys
-        disablePrecompiles := disablePrecompiles
-      }
+      let (childMsg : Msg) ← .ok <|
+        callMsg sevm evm1 gas value caller target codeAddress
+          shouldTransferValue isStaticcall calldata code disablePrecompiles
       let child ← liftToExecution evm1 <| processMessage vb childMsg lim
       let actualOutput := child.output.take output_size
       if child.error.isSome then
@@ -2979,11 +2998,7 @@ mutual
       let senderBal ← .ok <| (devm11.getAcct sevm.currentTarget).bal
       if senderBal < value then
         let devm12 ← devm11.push 0
-        .ok {
-          devm12 with
-          returnData := []
-          gasLeft := devm12.gasLeft + msgCallStipend
-        }
+        .ok ((devm12.withReturnData []).withGasLeft (devm12.gasLeft + msgCallStipend))
       else
         genericCall
           vb
