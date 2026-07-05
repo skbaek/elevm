@@ -1919,16 +1919,15 @@ def Linst.run (sevm : Sevm) (devm : Devm) :
   | .dest => do
     let donor := sevm.currentTarget
     let ⟨donee, devm1⟩ ← devm.popToAdr
-    let donorBal := (devm1.getAcct sevm.currentTarget).bal
-    let gasCost1 := gasSelfDestruct
-    let ⟨devm2, gasCost2⟩ :=
+    let donorBal ← .ok (devm1.getAcct sevm.currentTarget).bal
+    let ⟨devm2, gasCost2⟩ ← .ok <|
       if donee ∉ devm1.accessedAddresses
         then
           ( ⟨ addAccessedAddress devm1 donee,
-              gasCost1 + gasColdAccountAccess ⟩ : Devm × Nat )
+              gasSelfDestruct + gasColdAccountAccess ⟩ : Devm × Nat )
         else
-          ⟨devm1, gasCost1⟩
-    let gasCost3 :=
+          ⟨devm1, gasSelfDestruct⟩
+    let gasCost3 ← .ok <|
       if (devm2.getAcct donee).Empty ∧ donorBal ≠ 0 then
         gasCost2 + gasSelfDestructNewAccount
       else
@@ -1938,7 +1937,7 @@ def Linst.run (sevm : Sevm) (devm : Devm) :
     let devm4 ←
       (devm3.subBal donor donorBal).toExcept
         ⟨"ERROR : InsufficientBalanceError", devm3⟩
-    let devm5 := devm4.addBal donee donorBal
+    let devm5 ← .ok <| devm4.addBal donee donorBal
     if donor ∈ devm5.createdAccounts then
       .ok (addAccountToDelete (devm5.setBal donor 0) donor)
     else
