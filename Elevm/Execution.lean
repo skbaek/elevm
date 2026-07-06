@@ -2577,8 +2577,8 @@ def stepString (evm : Evm) (i : Inst) : String :=
     s!"{List.toStringSingleQuote <| evm.dyna.stack.map (fun x => "0x" ++ x.toHex.dropZeroes)}" ++
   ")."
 
-def showStep (vb : Bool) (evm : Evm) (i : Inst) : Except (Evm × String) Unit :=
-  if vb
+def showStep (evm : Evm) (i : Inst) : Except (Evm × String) Unit :=
+  if verbose ()
   then do
     .print (stepString evm i)
     .ok ()
@@ -2751,7 +2751,7 @@ def callMsg
 
 mutual
 
-  def executeCode (vb : Bool) (msg : Msg) :
+  def executeCode (msg : Msg) :
     Nat → Except (String × State × AdrSet × Tra) Devm
     | 0 =>
       .error ⟨
@@ -2764,15 +2764,15 @@ mutual
       let evm : Evm := initEvm msg
       match msg.codeAddress with
       | .none =>
-        executeCode.handleError <| exec vb evm lim
+        executeCode.handleError <| exec evm lim
       | .some adr =>
         if adr.isPrecomp then
           executeCode.handleError <| executePrecomp evm adr
         else
-          executeCode.handleError <| exec vb evm lim
+          executeCode.handleError <| exec evm lim
   termination_by lim => lim
 
-  def processMessage (vb : Bool) (msg : Msg) :
+  def processMessage (msg : Msg) :
     Nat → Except (String × State × AdrSet × Tra) Devm
     | 0 =>
       .error ⟨
@@ -2784,23 +2784,23 @@ mutual
     | lim + 1 => do
       /- In the original reference python implementation, there is a test here that
          checks the msg.depth value, and fails with a "stack depth limit error" if
-         it is larger than 1024. However, due to the way processMessage is defiend
+         it is larger than 1024. However, due to the way processMessage is defined
          and used, there is no way msg.depth ever has a value larger than 1024, and
          the error reporting is a dead code path that never will never get used, so
          it is omitted here.  -/
       let benv ← msg.benvAfterTransfer
-      let evm ← executeCode vb (msg.withBenv benv) lim
+      let evm ← executeCode (msg.withBenv benv) lim
       if evm.error.isSome then
         .ok <| evm.rollback msg.benv.state msg.tenv.transientStorage
       else
         .ok evm
   termination_by lim => lim
 
-  def processCreateMessage (vb : Bool) (msg : Msg) :
+  def processCreateMessage (msg : Msg) :
     Nat → Except (String × State × AdrSet × Tra) Devm
     | 0 => .error ⟨"RecursionLimit", msg.benv.state, msg.benv.createdAccounts, msg.tenv.transientStorage⟩
     | lim + 1 => do
-      let evm ← processMessage vb (processCreateMessage.msg msg) lim
+      let evm ← processMessage (processCreateMessage.msg msg) lim
       if evm.error.isNone then
         match processCreateMessage.chargeCodeGas evm with
         | .ok evm => .ok <| evm.setCode msg.currentTarget ⟨⟨evm.output⟩⟩
@@ -2818,7 +2818,6 @@ mutual
   termination_by lim => lim
 
   def genericCreate
-    (vb : Bool)
     (sevm : Sevm)
     (devm : Devm)
     (endowment : B256)
@@ -2866,7 +2865,7 @@ mutual
         accessedStorageKeys := devm4.accessedStorageKeys
         disablePrecompiles := false
       }
-      let child ← liftToExecution devm4 <| processCreateMessage vb childMsg lim
+      let child ← liftToExecution devm4 <| processCreateMessage childMsg lim
       if child.error.isSome then
         (incorporateChildOnError devm4 child child.output).push 0
       else
@@ -2874,7 +2873,6 @@ mutual
   termination_by lim => lim
 
   def genericCall
-    (vb : Bool)
     (sevm: Sevm)
     (devm: Devm)
     (gas: Nat)
@@ -2899,7 +2897,7 @@ mutual
       let (childMsg : Msg) ← .ok <|
         callMsg sevm evm1 gas value caller target codeAddress
           shouldTransferValue isStaticcall calldata code disablePrecompiles
-      let child ← liftToExecution evm1 <| processMessage vb childMsg lim
+      let child ← liftToExecution evm1 <| processMessage childMsg lim
       let actualOutput := child.output.take output_size
       if child.error.isSome then
         let evm2 ← (incorporateChildOnError evm1 child child.output).push 0
@@ -2909,7 +2907,7 @@ mutual
         .ok <| evm2.memWrite output_index actualOutput
   termination_by lim => lim
 
-  def Xinst.run (vb : Bool) (sevm : Sevm) (devm : Devm) :
+  def Xinst.run (sevm : Sevm) (devm : Devm) :
       Xinst → Nat → Execution
     |  _, 0 => .error ⟨"RecursionLimit", devm⟩
     | .create, lim + 1 => do
@@ -2925,7 +2923,6 @@ mutual
           sevm.currentTarget
           (devm5.state.get sevm.currentTarget).nonce
       genericCreate
-        vb
         sevm
         devm5
         endowment
@@ -2954,7 +2951,6 @@ mutual
           salt
           (devm6.memory.data.sliceD memoryIndex memorySize 0)
       genericCreate
-        vb
         sevm
         devm6
         endowment
@@ -3000,7 +2996,6 @@ mutual
         .ok ((devm12.withReturnData []).withGasLeft (devm12.gasLeft + msgCallStipend))
       else
         genericCall
-          vb
           sevm
           devm11
           msgCallStipend
@@ -3055,7 +3050,6 @@ mutual
         }
       else
         genericCall
-          vb
           sevm
           devm11
           msgCallStipend
@@ -3098,7 +3092,6 @@ mutual
         devm9.memExtends
           [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
       genericCall
-        vb
         sevm
         devm10
         msgCallStipend
@@ -3141,7 +3134,6 @@ mutual
         devm9.memExtends
           [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
       genericCall
-        vb
         sevm
         devm10
         msgCallStipend
@@ -3160,7 +3152,7 @@ mutual
         lim
   termination_by _ lim => lim
 
-  def Ninst.run (vb : Bool) (evm : Evm) :
+  def Ninst.run (evm : Evm) :
       --Ninst → Nat → Except (String × Devm) (Nat × Devm)
       Ninst → Nat → Execution
     | .push xs _, _ => do
@@ -3172,8 +3164,8 @@ mutual
       r.run evm
     | .exec _, 0 => .error ⟨"RecursionLimit", evm.dyna⟩
     | .exec x, lim + 1 =>
-      -- (Xinst.run vb evm.sta evm.dyna x lim).withPc (evm.pc + 1)
-      Xinst.run vb evm.sta evm.dyna x lim
+      -- (Xinst.run evm.sta evm.dyna x lim).withPc (evm.pc + 1)
+      Xinst.run evm.sta evm.dyna x lim
   termination_by _ lim => lim
 
 
@@ -3193,7 +3185,6 @@ mutual
           (devm5.state.get evm.sta.currentTarget).nonce
       let devm6 ←
         genericCreate
-          vb
           evm.sta
           devm5
           endowment
@@ -3224,7 +3215,6 @@ mutual
           (devm6.memory.data.sliceD memoryIndex memorySize 0)
       let devm7 ←
         genericCreate
-          vb
           evm.sta
           devm6
           endowment
@@ -3279,7 +3269,6 @@ mutual
       else
         let devm12 ←
           genericCall
-            vb
             evm.sta
             devm11
             msgCallStipend
@@ -3339,7 +3328,6 @@ mutual
       else
         let devm12 ←
           genericCall
-            vb
             evm.sta
             devm11
             msgCallStipend
@@ -3384,7 +3372,6 @@ mutual
           [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
       let devm11 ←
         genericCall
-          vb
           evm.sta
           devm10
           msgCallStipend
@@ -3429,7 +3416,6 @@ mutual
           [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
       let devm11 ←
         genericCall
-          vb
           evm.sta
           devm10
           msgCallStipend
@@ -3449,23 +3435,23 @@ mutual
       .ok ⟨evm.pc + 1, devm11⟩
   -/
 
-  def exec : Bool → Evm → Nat → Execution
-    | _, evm, 0 =>
+  def exec : Evm → Nat → Execution
+    | evm, 0 =>
       .error ⟨"RecursionLimit", evm.dyna⟩
-    | vb, evm, lim + 1 => do
+    | evm, lim + 1 => do
       -- let mut evm := evm
       -- showLim lim evm
       let i ← (evm.getInst).toExcept ⟨"InvalidOpcode", evm.dyna⟩
-      -- showStep vb evm i
+      -- showStep evm i
       match i with
       | .next n =>
-        let devm ← n.run vb evm lim
-        exec vb ⟨evm.pc + n.size, evm.sta, devm⟩ lim
+        let devm ← n.run evm lim
+        exec ⟨evm.pc + n.size, evm.sta, devm⟩ lim
       | .jump j =>
         let ⟨pc, devm⟩ ← j.run evm
-        exec vb ⟨pc, evm.sta, devm⟩ lim
+        exec ⟨pc, evm.sta, devm⟩ lim
       | .last l => l.run evm.sta evm.dyna
-  termination_by _ _ lim => lim
+  termination_by _ lim => lim
 
 end
 
@@ -3962,7 +3948,7 @@ def setDelegation (msg : Msg) : Except String (Msg × B256) := do
       }
   .ok ⟨msg, refundCounter⟩
 
-def processMessageCall.create (vb : Bool) (msg : Msg) :
+def processMessageCall.create (msg : Msg) :
   Except String (State × MsgCallOutput) := do
   let benv := msg.benv
   let isCollision : Bool :=
@@ -3970,7 +3956,7 @@ def processMessageCall.create (vb : Bool) (msg : Msg) :
   if isCollision then
     return ⟨benv.state, ⟨0, 0, [], .emptyWithCapacity, "AddressCollision", []⟩⟩
   else
-    let evm ← Except.bimap Prod.fst id <| processCreateMessage vb msg (msg.gas + 50)
+    let evm ← Except.bimap Prod.fst id <| processCreateMessage msg (msg.gas + 50)
     let logs := if evm.error.isNone then evm.logs else []
     let accountsToDelete := if evm.error.isNone then evm.accountsToDelete else .emptyWithCapacity
     let refundCounter ←
@@ -3990,7 +3976,7 @@ def processMessageCall.create (vb : Bool) (msg : Msg) :
       }
     ⟩
 
-def processMessageCall.call (vb : Bool) (msg : Msg) :
+def processMessageCall.call (msg : Msg) :
   Except String (State × MsgCallOutput) := do
   let (⟨msgDelegation, refundDelegation⟩ : Msg × Nat) ←
     if msg.tenv.stat.auths.isEmpty then
@@ -4009,7 +3995,7 @@ def processMessageCall.call (vb : Bool) (msg : Msg) :
         code := msg.benv.state.getCode dca,
         codeAddress := some dca
       }
-  let evm ← Except.bimap Prod.fst id <| processMessage vb msgPc (msgPc.gas + 50)
+  let evm ← Except.bimap Prod.fst id <| processMessage msgPc (msgPc.gas + 50)
   let refundProcessMessage ←
     if evm.error.isNone then
       (Int.toNat? evm.refundCounter).toExcept "ERROR : refund counter is negative"
@@ -4029,12 +4015,12 @@ def processMessageCall.call (vb : Bool) (msg : Msg) :
     }
   ⟩
 
-def processMessageCall (vb : Bool) (msg : Msg) :
+def processMessageCall (msg : Msg) :
     Except String (State × MsgCallOutput) := do
   if msg.target.isNone then
-    processMessageCall.create vb msg
+    processMessageCall.create msg
   else
-    processMessageCall.call vb msg
+    processMessageCall.call msg
 
 def Tx.isTypeThree (tx : Tx) : Bool :=
   match tx.type with
@@ -4289,7 +4275,7 @@ def BlockOutput.init : BlockOutput :=
 
 -- process_transaction
 def processTransaction
-  (vb : Bool) (benv: Benv) (bout : BlockOutput)
+  (benv: Benv) (bout : BlockOutput)
   (tx: Tx) (index : Nat) : Except String (State × BlockOutput) := do
   let transactionsTrie : Std.TreeMap B8L Tx compare :=
     bout.transactionsTrie.insert (BLT.b8s index.toB8L).toB8L tx
@@ -4329,7 +4315,7 @@ def processTransaction
     }
   }
   let msg ← prepareMessage {benv with state := state} tenv tx
-  let ⟨state', txOutput⟩ ← processMessageCall vb msg
+  let ⟨state', txOutput⟩ ← processMessageCall msg
   state := state'
   let txGasUsedBeforeRefund := tx.gas - txOutput.gasLeft
   let refundCounter : Nat ←
@@ -4538,13 +4524,13 @@ def processSystemTransactionMsg (benv : Benv) (tenv : Tenv)
   }
 
 -- process_system_transaction
-def processSystemTransaction (vb : Bool) (benv : Benv)
+def processSystemTransaction (benv : Benv)
   (target : Adr) (code : ByteArray) (data : B8L) :
   Except String (State × MsgCallOutput) := do
   let txEnv : Tenv := processSystemTransactionTenv benv
   let systemTxMsg : Msg :=
     processSystemTransactionMsg benv txEnv target data code
-  processMessageCall vb systemTxMsg
+  processMessageCall systemTxMsg
 
 def extractDepositData (data : B8L) : Except String B8L := do
   if data.length != depositEventLength then
@@ -4594,25 +4580,25 @@ def parseDepositRequests
   .ok depositRequests
 
 def processUncheckedSystemTransaction
-  (vb : Bool) (benv : Benv) (target : Adr) (data : B8L) :
+  (benv : Benv) (target : Adr) (data : B8L) :
   Except String (State × MsgCallOutput) := do
   let systemContractCode : ByteArray := benv.state.getCode target
-  processSystemTransaction vb benv target systemContractCode data
+  processSystemTransaction benv target systemContractCode data
 
 def processCheckedSystemTransaction
-  (vb : Bool) (benv : Benv) (target : Adr) (data : B8L) :
+  (benv : Benv) (target : Adr) (data : B8L) :
   Except String (State × MsgCallOutput) := do
   let systemContractCode : ByteArray := benv.state.getCode target
   if systemContractCode.isEmpty then
     .error s!"InvalidBlock : System contract address {target.toHex} does not contain code"
   let ⟨state, systemTxOutput⟩ ←
-    processSystemTransaction vb benv target systemContractCode data
+    processSystemTransaction benv target systemContractCode data
   if systemTxOutput.error.isSome then
     .error s!"InvalidBlock : System contract ({target.toHex}) call failed: {systemTxOutput.error.get!}"
   .ok ⟨state, systemTxOutput⟩
 
 def processGeneralPurposeRequests
-  (vb : Bool) (benv : Benv) (bout : BlockOutput) :
+  (benv : Benv) (bout : BlockOutput) :
   Except String (State × BlockOutput) := do
   let depositRequests ← parseDepositRequests bout
   let mut requestsFromExecution : List B8L := bout.requests
@@ -4620,7 +4606,7 @@ def processGeneralPurposeRequests
     requestsFromExecution :=
       requestsFromExecution ++ [depositRequestType ++ depositRequests]
   let ⟨state, withdrawalOutput⟩  ←
-    processCheckedSystemTransaction vb benv
+    processCheckedSystemTransaction benv
       withdrawalRequestPredeployAddress
       []
   let benv := {benv with state := state}
@@ -4628,7 +4614,7 @@ def processGeneralPurposeRequests
     requestsFromExecution :=
       requestsFromExecution ++ [withdrawalRequestType ++ withdrawalOutput.returnData]
   let ⟨state, consolidationOutput⟩  ←
-    processCheckedSystemTransaction vb benv
+    processCheckedSystemTransaction benv
       consolidationRequestPredeployAddress
       []
   if consolidationOutput.returnData.length > 0 then
@@ -4637,39 +4623,39 @@ def processGeneralPurposeRequests
   .ok ⟨state, {bout with requests := requestsFromExecution}⟩
 
 def applyTransactions :
-    Bool → List (Nat × Tx) → Benv → BlockOutput → Except String (Benv × BlockOutput)
-  | _, [], benv, bout => .ok (benv, bout)
-  | vb, ⟨i, tx⟩ :: txis, benv , bout => do
-    let ⟨st, bout'⟩ ← processTransaction vb benv bout tx i
-    applyTransactions vb txis (benv.withState st) bout'
+    List (Nat × Tx) → Benv → BlockOutput → Except String (Benv × BlockOutput)
+  | [], benv, bout => .ok (benv, bout)
+  | ⟨i, tx⟩ :: txis, benv , bout => do
+    let ⟨st, bout'⟩ ← processTransaction benv bout tx i
+    applyTransactions txis (benv.withState st) bout'
 
 def applyBody
-  (vb : Bool) (benv : Benv) (txs : List (B8L ⊕ Tx)) (wds : List Withdrawal) :
+  (benv : Benv) (txs : List (B8L ⊕ Tx)) (wds : List Withdrawal) :
   Except String (State × BlockOutput) := do
-  cprint vb "\n================================ BEACON ROOTS TX ================================\n"
+  cprint "\n================================ BEACON ROOTS TX ================================\n"
   let ⟨stBeacon, _⟩ ←
-    processUncheckedSystemTransaction false benv
+    processUncheckedSystemTransaction benv
       beaconRootsAddress
       benv.stat.parentBeaconBlockRoot.toB8L
   let benvBeacon : Benv := benv.withState stBeacon
-  cprint vb "\n================================ HISTORY STORAGE TX ================================\n"
+  cprint "\n================================ HISTORY STORAGE TX ================================\n"
   let lastHash ←
      benvBeacon.stat.blockHashes.getLast?.toExcept "ERROR : block hashes is empty"
   let ⟨stHistory, _⟩ ←
-    processUncheckedSystemTransaction false benvBeacon
+    processUncheckedSystemTransaction benvBeacon
       historyStorageAddress
       lastHash.toB8L
   let benvHistory := benvBeacon.withState stHistory
-  cprint vb "\n================================ MAIN TXS ================================\n"
+  cprint "\n================================ MAIN TXS ================================\n"
   let ⟨benvTxs, boutTxs⟩ ←
-    applyTransactions vb (← txs.mapM decodeTx).putIndex benvHistory .init
-  cprint vb s!"\nSTATE AFTER TEST TXS :"
-  cprint vb s!"{benvTxs.state}"
-  cprint vb "\n================================ PROCESS WITHDRAWALS ================================\n"
+    applyTransactions (← txs.mapM decodeTx).putIndex benvHistory .init
+  cprint s!"\nSTATE AFTER TEST TXS :"
+  cprint s!"{benvTxs.state}"
+  cprint "\n================================ PROCESS WITHDRAWALS ================================\n"
   let ⟨stWds, boutWds⟩ :=
     processWithdrawals benvTxs boutTxs wds
-  cprint vb "\n================================ PROCESS GENERAL PURPOSE REQUESTS ================================\n"
-  processGeneralPurposeRequests vb (benvTxs.withState stWds) boutWds
+  cprint "\n================================ PROCESS GENERAL PURPOSE REQUESTS ================================\n"
+  processGeneralPurposeRequests (benvTxs.withState stWds) boutWds
 
 -- get_last256_block_hashes
 def getLast256BlockHashes (chain : BlockChain) : List B256 :=
@@ -4762,12 +4748,12 @@ def stateTransitionOmmersCheck (ommers : List Header) : Except String Unit := do
 def appendBlock (blks : List Block) (blk : Block) : List Block :=
   (blk :: blks.reverse.take 254).reverse
 
-def stateTransition (vb : Bool) (ch : BlockChain) (block : Block) :
+def stateTransition (ch : BlockChain) (block : Block) :
   Except String BlockChain := do
   validateHeader ch block.header
   stateTransitionOmmersCheck block.ommers
   let benv : Benv := initBenv ch block.header
-  let ⟨st, bout⟩ ← applyBody vb benv block.txs block.wds
+  let ⟨st, bout⟩ ← applyBody benv block.txs block.wds
   let blockStateRoot : B256 := st.root
   let transactionsRoot : B256 := getTransactionsRoot bout
   let receiptRoot : B256 := getReceiptRoot bout
@@ -4858,20 +4844,20 @@ def rlpToBlock (rlp : B8L) : Except String (Block × B256) := do
   let block ← block_blt.toExStrBlock
   .ok ⟨block, (Header.toBLT block.header).toB8L.keccak⟩
 
-def addBlockToChain (vb : Bool) (chain : BlockChain) (blockRlp : B8L) :
+def addBlockToChain (chain : BlockChain) (blockRlp : B8L) :
   Except String (BlockChain ⊕ String) := do
   let ⟨block, blockHeaderHash⟩ ← rlpToBlock blockRlp
-  cprint vb "\nSTATE BEFORE TRANSITION :"
-  cprint vb s!"{chain.state}"
+  cprint "\nSTATE BEFORE TRANSITION :"
+  cprint s!"{chain.state}"
   if (Header.toBLT block.header).toB8L.keccak ≠ blockHeaderHash then do
     .error "ERROR : incorrect block header hash"
   let rlp' := block.toBLT.toB8L
   if blockRlp ≠ rlp' then do
     .error "ERROR : incorrect block rlp"
   let chain ←
-    match stateTransition vb chain block with
+    match stateTransition chain block with
     | .error err => return (.inr err)
     | .ok chain => .ok chain
-  cprint vb s!"\nSTATE AFTER TRANSITION :"
-  cprint vb s!"{chain.state}"
+  cprint s!"\nSTATE AFTER TRANSITION :"
+  cprint s!"{chain.state}"
   .ok (.inl chain)

@@ -150,17 +150,17 @@ def Except.toIO {ξ : Type} : Except String ξ → IO ξ
   | .ok x => .ok x
   | .error err => .throw err
 
-def processBlockJsons (vb : Bool) (chain : BlockChain) :
+def processBlockJsons (chain : BlockChain) :
   List Lean.Json → IO (Option BlockChain)
   | j :: js => do
     let ⟨ex, j⟩ ← getTxExMap j
     match ex with
     | .none =>
-      match (← (addBlockToChain vb chain j).toIO) with
+      match (← (addBlockToChain chain j).toIO) with
       | .inr ex => .throw s!"unexpected TX exception : {ex}"
-      | .inl chain => processBlockJsons vb chain js
+      | .inl chain => processBlockJsons chain js
     | .some _ =>
-      match (← (addBlockToChain vb chain j).toIO) with
+      match (← (addBlockToChain chain j).toIO) with
       | .inr ex' =>
         .guard
           (isEthereumException ex' || isRlpException ex')
@@ -170,7 +170,7 @@ def processBlockJsons (vb : Bool) (chain : BlockChain) :
         .throw "ERROR : expected exception not raised"
   | [] => .ok <| some chain
 
-def runBlockchainStTest (vb : Bool) (idx? : Option Nat)
+def runBlockchainStTest (idx? : Option Nat)
   (incls excls : List String) : (Nat × String × Lean.Json) → IO Unit
   | ⟨idx, name, json⟩ => do
     match idx? with
@@ -217,7 +217,7 @@ def runBlockchainStTest (vb : Bool) (idx? : Option Nat)
     }
 
     let blockJsons ← json.find "blocks" >>= Lean.Json.toIoList
-    let (some chain) ← processBlockJsons vb chain blockJsons | .ok ()
+    let (some chain) ← processBlockJsons chain blockJsons | .ok ()
     let lastBlockHash ← json.find "lastblockhash" >>= Lean.Json.toIoB256
     let lastBlock ← chain.blocks.getLast?.toIO "error : no last block "
     let lastBlockHash' := (Header.toBLT lastBlock.header).toB8L.keccak
@@ -230,7 +230,7 @@ def runBlockchainStTest (vb : Bool) (idx? : Option Nat)
       (postStateRoot = chain.state.root)
       s!"error : end state root does not match\n  expected : {postStateRoot}\n  computed : {chain.state.root}"
 
-def runTestFile (vb : Bool) (testIdx : Option Nat)
+def runTestFile (testIdx : Option Nat)
   (incls excls : List String) (idxPath : Nat × String) : IO Unit := do
   let fileIdx := idxPath.fst
   let path := idxPath.snd
@@ -238,7 +238,7 @@ def runTestFile (vb : Bool) (testIdx : Option Nat)
   .println s!"TEST FILE #{fileIdx} : {path}\n"
   let rb ← readJsonFile path >>= Lean.Json.toIoRBNode
   let js := rb.toArray.toList.putIndex
-  let _ ← js.mapM <| runBlockchainStTest vb testIdx incls excls
+  let _ ← js.mapM <| runBlockchainStTest testIdx incls excls
   .ok ()
 
 def getTestNames (incls excls : List String) :
@@ -276,7 +276,7 @@ def getFiles (path : System.FilePath) : IO (List System.FilePath) := do
 
 def main : List String → IO Unit
   | path :: opts => do
-    let vb : Bool := List.contains opts "--verbose"
+    verbosityRef.set (List.contains opts "--verbose")
     let testIdx : Option Nat := getTestIndex opts
     let skip : Option Nat := getSkip opts
     let ⟨incls, excls⟩ := getTestNames [] [] opts
@@ -287,7 +287,7 @@ def main : List String → IO Unit
       | some n => files.drop n
     let _ ←
       List.mapM
-        (runTestFile vb testIdx incls excls)
+        (runTestFile testIdx incls excls)
         (files.map System.FilePath.toString).putIndex
     pure ()
   | _ => IO.throw "error : invalid arguments"

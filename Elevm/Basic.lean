@@ -1554,8 +1554,38 @@ def List.maxD {ξ} [Max ξ] : List ξ → ξ → ξ
   | [], y => y
   | x :: xs, y => maxD xs (max x y)
 
-def cprint {m : Type → Type v}  [inst : Monad m] (vb : Bool) (msg : String) : m Unit := do
-  if vb then do
+/-- Global verbosity flag, set once at startup (see `main`). Threading a `vb :
+Bool` through every execution definition was noise, so it lives here instead. -/
+initialize verbosityRef : IO.Ref Bool ← IO.mkRef false
+
+@[never_extract] unsafe def verboseImpl (_ : Unit) : Bool :=
+  unsafeBaseIO verbosityRef.get
+
+/-- Ambient verbosity flag. Logically the constant `false`; at runtime it reads
+`verbosityRef`, which `main` sets once from `--verbose` before any execution
+runs. Three precautions keep the read from being evaluated before `main` sets
+the flag (which would lock in the `mkRef` default forever):
+
+1. The `Unit` argument — a nullary `def` would be a CAF, forced once at
+   module-load time.
+2. `@[never_extract]` on `verboseImpl` — otherwise the compiler lifts the
+   closed term `verboseImpl ()` out of function bodies into a module-init
+   constant (closed-term extraction), evaluating it at load time.
+3. `@[never_extract]` on `verbose` and `cprint` — same protection at the
+   source level, e.g. for the closed subterm `cprint "some literal"`.
+
+Note `never_extract` is shallow: it protects terms that *directly mention* the
+marked constant. A fully-closed application further up the call chain (e.g.
+`f 42` where `f` transitively calls `cprint`) would still be extracted and
+init-evaluated with verbosity off. Fine here, since every execution call takes
+runtime data. Also keep the set-once discipline: do not mutate `verbosityRef`
+after startup, or pure readers see inconsistent values. -/
+@[never_extract, implemented_by verboseImpl] def verbose (_ : Unit) : Bool :=
+  false
+
+@[never_extract]
+def cprint {m : Type → Type v}  [inst : Monad m] (msg : String) : m Unit := do
+  if verbose () then do
     dbg_trace msg
 
 def Except.print {ξ : Type} (msg : String) : Except ξ Unit := do
