@@ -4,30 +4,11 @@ import Elevm.Basic
 import Std.Data.TreeMap.Lemmas
 
 
+
 def Adr : Type := B32 × B128
-
-
-
-structure Adr' : Type where
-  (high : UInt32)
-  (mid : UInt64)
-  (low : UInt64)
-deriving DecidableEq
-
-def Adr'.toNat (x : Adr') : Nat :=
-  x.high.toNat * (2 ^ 128) +
-  x.mid.toNat * (2 ^ 64) +
-  x.low.toNat
 
 def Adr.toNat (x : Adr) : Nat :=
   (x.1.toNat <<< 128) ||| x.2.toNat
-
-def Nat.toAdr' (n : Nat) : Adr' :=
-  {
-    high := (n / (2 ^ 128)).toUInt32
-    mid  := (n / (2 ^ 64)).toUInt64
-    low  := n.toUInt64
-  }
 
 def Nat.toAdr (n : Nat) : Adr :=
   ⟨(n >>> 128).toB32, n.toB128⟩
@@ -1082,7 +1063,6 @@ inductive Rinst : Type
   | dup : Fin 16 → Rinst
   | swap : Fin 16 → Rinst
   | log : Fin 5 → Rinst
--- deriving DecidableEq
 
 inductive Jinst : Type
   | jump -- 0x56 / 1 / 0 / Unconditional jump.
