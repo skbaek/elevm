@@ -3993,9 +3993,14 @@ def BlockOutput.init : BlockOutput :=
 def processTransaction
   (benv: Benv) (bout : BlockOutput)
   (tx: Tx) (index : Nat) : Except String (State × BlockOutput) := do
-  let transactionsTrie : Std.TreeMap B8L Tx compare :=
-    bout.transactionsTrie.insert (BLT.b8s index.toB8L).toB8L tx
-  let bout := {bout with transactionsTrie := transactionsTrie}
+  -- NOTE: linearized into a straight `let ← .ok (…)` / `let := …` chain
+  -- (no `mut`/`for`) so the block inverts cleanly with `of_bind_eq_ok` and the
+  -- `bout` bookkeeping stays opaque.  Definitionally equal to the previous
+  -- `mut`/`for` form except that the final account-deletion `for` is expressed
+  -- as `foldl`, which agrees because `destroyAccount` commutes over the
+  -- distinct addresses of the `accountsToDelete` set.
+  let bout ← .ok {bout with
+    transactionsTrie := bout.transactionsTrie.insert (BLT.b8s index.toB8L).toB8L tx}
   let ⟨intrinsicGas, calldataFloorGasCost⟩ ← validateTransaction tx
   let ⟨
     sender,
@@ -4009,8 +4014,8 @@ def processTransaction
     else 0
   let effectiveGasFee := tx.gas * effectiveGasPrice
   let gas := tx.gas - intrinsicGas
-  let mut state : State := benv.state.incrNonce sender
-  state ← (state.subBal sender (effectiveGasFee + blobGasFee).toB256).toExcept
+  let state : State := benv.state.incrNonce sender
+  let state ← (state.subBal sender (effectiveGasFee + blobGasFee).toB256).toExcept
     "ERROR : balance underflow"
   let preaccessedAddresses : AdrSet :=
     .ofList (benv.stat.coinbase :: tx.accessList.map Prod.fst)
@@ -4031,12 +4036,11 @@ def processTransaction
     }
   }
   let msg ← prepareMessage {benv with state := state} tenv tx
-  let ⟨state', txOutput⟩ ← processMessageCall msg
-  state := state'
+  let ⟨state, txOutput⟩ ← processMessageCall msg
   let txGasUsedBeforeRefund := tx.gas - txOutput.gasLeft
   let refundCounter : Nat ←
     (Int.toNat? txOutput.refundCounter).toExcept "ERROR : refund counter is negative"
-  let mut txGasRefund : Nat :=
+  let txGasRefund : Nat :=
     min (txGasUsedBeforeRefund / 5) refundCounter
   let txGasUsedAfterRefund : Nat :=
     max (txGasUsedBeforeRefund - txGasRefund) calldataFloorGasCost
@@ -4046,25 +4050,19 @@ def processTransaction
     txGasLeft * effectiveGasPrice
   let priorityFeePerGas := effectiveGasPrice - benv.stat.baseFeePerGas
   let transactionFee := txGasUsedAfterRefund * priorityFeePerGas
-  state := state.addBal sender gasRefundAmount.toB256
-  state := state.addBal benv.stat.coinbase transactionFee.toB256
-  for adr in txOutput.accountsToDelete do
-    state := destroyAccount state adr
-  let mut bout := {
-    bout with
+  let state := state.addBal sender gasRefundAmount.toB256
+  let state := state.addBal benv.stat.coinbase transactionFee.toB256
+  let state := txOutput.accountsToDelete.toList.foldl destroyAccount state
+  let bout ← .ok {bout with
     blockGasUsed := bout.blockGasUsed + txGasUsedAfterRefund,
-    blobGasUsed := bout.blobGasUsed + txBlobGasUsed
-  }
+    blobGasUsed := bout.blobGasUsed + txBlobGasUsed}
   let receipt :=
     makeReceipt tx txOutput.error bout.blockGasUsed txOutput.logs
   let receiptKey : B8L := BLT.toB8L <| .b8s index.toB8L
-  bout := {
-    bout with
+  let bout ← .ok {bout with
     receiptKeys := bout.receiptKeys ++ [receiptKey]
-    receiptsTrie :=
-      bout.receiptsTrie.insert receiptKey receipt
-    blockLogs := bout.blockLogs ++ txOutput.logs
-  }
+    receiptsTrie := bout.receiptsTrie.insert receiptKey receipt
+    blockLogs := bout.blockLogs ++ txOutput.logs}
   .ok ⟨state, bout⟩
 
 def BlockOutput.withWithdrawalsTrie
