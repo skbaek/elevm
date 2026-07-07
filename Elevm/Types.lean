@@ -1036,8 +1036,8 @@ inductive Rinst : Type
   | xor -- 0x18 / 2 / 1 / bitwise xor operation.
   | not -- 0x19 / 1 / 1 / bitwise not operation.
   | byte -- 0x1A / 2 / 1 / retrieve a single Byte from a Word.
-  | shr -- 0x1B / 2 / 1 / logical shift right operation.
-  | shl -- 0x1C / 2 / 1 / logical shift left operation.
+  | shl -- 0x1B / 2 / 1 / logical shift left operation.
+  | shr -- 0x1C / 2 / 1 / logical shift right operation.
   | sar -- 0x1D / 2 / 1 / arithmetic (signed) shift right operation.
   | kec -- 0x20 / 2 / 1 / compute Keccak-256 hash.
   | address -- 0x30 / 0 / 1 / Get the Addr of the currently executing account.
@@ -1073,7 +1073,7 @@ inductive Rinst : Type
   | mstore8 -- 0x53 / 2 / 0 / store a Byte in memory.
   | sload -- 0x54 / 1 / 1 / load a word from storage.
   | sstore -- 0x55 / 2 / 0 / store a word in storage.
-  | tload -- 0x5C / 1 / 1 / load a word from transient torage.
+  | tload -- 0x5C / 1 / 1 / load a word from transient storage.
   | tstore -- 0x5D / 2 / 0 / store a word in transient storage.
   | mcopy -- 0x5E / 3 / 0 /
   | pc -- 0x58 / 0 / 1 / Get the current program counter value.
@@ -1174,8 +1174,8 @@ def Rinst.toString : Rinst → String
   | pc => "PC"
   | msize => "MSIZE"
   | gas => "GAS"
-  | dup n => "DUP" ++ n.val.repr
-  | swap n => "SWAP" ++ n.val.repr
+  | dup n => "DUP" ++ (n.val + 1).repr
+  | swap n => "SWAP" ++ (n.val + 1).repr
   | log n => "LOG" ++ n.val.repr
 
 def Xinst.toString : Xinst → String
@@ -1216,8 +1216,8 @@ def B8.toRinst : B8 → Option Rinst
   | 0x18 => some .xor -- 0x18 / 2 / 1 / bitwise xor operation.
   | 0x19 => some .not -- 0x19 / 1 / 1 / bitwise not operation.
   | 0x1a => some .byte -- 0x1a / 2 / 1 / retrieve a single byte from a word.
-  | 0x1b => some .shl -- 0x1b / 2 / 1 / logical shift right operation.
-  | 0x1c => some .shr -- 0x1c / 2 / 1 / logical shift left operation.
+  | 0x1b => some .shl -- 0x1b / 2 / 1 / logical shift left operation.
+  | 0x1c => some .shr -- 0x1c / 2 / 1 / logical shift right operation.
   | 0x1d => some .sar -- 0x1d / 2 / 1 / arithmetic (signed) shift right operation.
   | 0x20 => some .kec -- 0x20 / 2 / 1 / compute Keccak-256 hash.
   | 0x30 => some .address -- 0x30 / 0 / 1 / Get the address of the currently executing account.
@@ -1243,7 +1243,7 @@ def B8.toRinst : B8 → Option Rinst
   | 0x44 => some .prevrandao -- 0x44 / 0 / 1 / get the difficulty of the current block.
   | 0x45 => some .gaslimit -- 0x45 / 0 / 1 / get the gas limit of the current block.
   | 0x46 => some .chainid -- 0x46 / 0 / 1 / get the chain id of the current blockchain.
-  | 0x47 => some .selfbalance -- 0x46 / 0 / 1 / get the chain id of the current blockchain.
+  | 0x47 => some .selfbalance
   | 0x48 => some .basefee -- 0x48 / 0 / 1 /
   | 0x49 => some .blobhash -- 0x49 / 1 / 1 /
   | 0x4A => some .blobbasefee -- 0x4A / 0 / 1 /
@@ -1256,9 +1256,9 @@ def B8.toRinst : B8 → Option Rinst
   | 0x58 => some .pc -- 0x58 / 0 / 1 / Get the current program counter value.
   | 0x59 => some .msize -- 0x59 / 0 / 1 / Get the size of the memory.
   | 0x5a => some .gas -- 0x5a / 0 / 1 / Get the amount of remaining gas.
-  | 0x5C => some .tload -- 0x54 / 1 / 1 / Load a word from storage.
-  | 0x5D => some .tstore -- 0x55 / 2 / 0 / Store a word in storage.
-  | 0x5E => some .mcopy -- 0x55 / 2 / 0 / Store a word in storage.
+  | 0x5C => some .tload
+  | 0x5D => some .tstore
+  | 0x5E => some .mcopy
   | 0x80 => some (.dup 0)
   | 0x81 => some (.dup 1)
   | 0x82 => some (.dup 2)
