@@ -3625,41 +3625,53 @@ def recoverAuthority (auth : Auth) : Except String Adr := do
         ]
   (secp256k1.recover signingHash yParity.toBool r s ).toExcept "sender recovery failed"
 
-def setDelegation (msg : Msg) : Except String (Msg × B256) := do
-  let mut refundCounter : B256 := 0
-  let mut msg := msg
-  for auth in msg.tenv.stat.auths do
-    if auth.chainId != msg.benv.stat.chainId && auth.chainId != 0 then
-      continue
-    if auth.nonce = B64.max then
-      continue
-    let authority : Adr ←
-      match recoverAuthority auth with
-      | .error err =>
-        if err = "InvalidSignatureError" then
-          continue
-        else
-          .error err
-      | .ok adr => .ok adr
-    msg := {msg with accessedAddresses := msg.accessedAddresses.insert authority}
-    let authorityAccount : Acct :=
-      msg.benv.state.get authority
-    let authorityCode : ByteArray := authorityAccount.code
-    if ¬ (authorityCode.isEmpty ∧ isValidDelegation authorityCode) then
-      continue
-    if authorityAccount.nonce != auth.nonce then
-      continue
-    if AccountExists msg.benv.state authority then
-      refundCounter :=
-        refundCounter + (perEmptyAccountCost - perAuthBaseCost).toB256
-    let codeToSet : ByteArray :=
-      if auth.address = 0 then
-        .empty
+def setDelegationStep
+    (auth : Auth) (msg : Msg) (refundCounter : B256) :
+    Except String (Msg × B256) := do
+  if auth.chainId != msg.benv.stat.chainId && auth.chainId != 0 then
+    .ok ⟨msg, refundCounter⟩
+  else if auth.nonce = B64.max then
+    .ok ⟨msg, refundCounter⟩
+  else
+    match recoverAuthority auth with
+    | .error err =>
+      if err = "InvalidSignatureError" then
+        .ok ⟨msg, refundCounter⟩
       else
-        (eoaDelegationMarker ++ auth.address.toB8L).toByteArray
-    msg := msg.setCode authority codeToSet
-    msg := msg.incrNonce authority
-  msg ←
+        .error err
+    | .ok authority =>
+      let msg := {msg with accessedAddresses := msg.accessedAddresses.insert authority}
+      let authorityAccount : Acct :=
+        msg.benv.state.get authority
+      let authorityCode : ByteArray := authorityAccount.code
+      if ¬ (authorityCode.isEmpty ∧ isValidDelegation authorityCode) then
+        .ok ⟨msg, refundCounter⟩
+      else if authorityAccount.nonce != auth.nonce then
+        .ok ⟨msg, refundCounter⟩
+      else
+        let refundCounter :=
+          if AccountExists msg.benv.state authority then
+            refundCounter + (perEmptyAccountCost - perAuthBaseCost).toB256
+          else
+            refundCounter
+        let codeToSet : ByteArray :=
+          if auth.address = 0 then
+            .empty
+          else
+            (eoaDelegationMarker ++ auth.address.toB8L).toByteArray
+        let msg := msg.setCode authority codeToSet
+        let msg := msg.incrNonce authority
+        .ok ⟨msg, refundCounter⟩
+
+def setDelegationLoop : List Auth → Msg → B256 → Except String (Msg × B256)
+  | [], msg, refundCounter => .ok ⟨msg, refundCounter⟩
+  | auth :: auths, msg, refundCounter => do
+    let ⟨msg, refundCounter⟩ ← setDelegationStep auth msg refundCounter
+    setDelegationLoop auths msg refundCounter
+
+def setDelegation (msg : Msg) : Except String (Msg × B256) := do
+  let ⟨msg, refundCounter⟩ ← setDelegationLoop msg.tenv.stat.auths msg 0
+  let msg ←
     match msg.codeAddress with
     | none =>
       .error "InvalidBlock : Invalid type 4 transaction: no target"
