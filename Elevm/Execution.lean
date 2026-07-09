@@ -3788,75 +3788,130 @@ structure BlockOutput : Type where
   blobGasUsed : Nat
   requests : List B8L
 
--- check_transaction
-def checkTransaction (benv : Benv) (blockOut : BlockOutput) (tx : Tx) :
-  Except String (Adr × Nat × List B256 × Nat) := do
+-- The following helpers keep the checks in the same order, with the same
+-- returned payloads and error strings, as the monolithic transaction checker.
+-- Splitting the executable stages makes successful runs easier to invert in
+-- proofs without unfolding the whole checker at once.
+
+def checkTransactionGasLimits
+    (benv : Benv) (blockOut : BlockOutput) (tx : Tx) :
+    Except String Nat :=
   let gasAvailable := benv.stat.blockGasLimit - blockOut.blockGasUsed
   let blobGasAvailable := maxBlobGasPerBlock - blockOut.blobGasUsed
   if tx.gas > gasAvailable then
     .error "GasUsedExceedsLimitError : gas used exceeds limit"
-  let txBlobGasUsed := calculateTotalBlobGas tx
-  if txBlobGasUsed > blobGasAvailable then
-    .error s!"BlobGasLimitExceededError : blob gas used = {txBlobGasUsed}, blob gas available = {blobGasAvailable}"
-  let senderAddress ← recoverSender benv.stat.chainId tx
-  let senderAccount := benv.state.get senderAddress
-  let mut effectiveGasPrice := 0
-  let mut maxGasFee := 0
-  let selector : Nat ⊕ (Nat × Nat) :=
-    match tx.type with
-    | .zero gasPrice _ => .inl gasPrice
-    | .one _ gasPrice _ _ => .inl gasPrice
-    | .two _ maxPriorityFee maxFee _ _ => .inr (maxPriorityFee, maxFee)
-    | .three _ maxPriorityFee maxFee _ _ _ _ => .inr (maxPriorityFee, maxFee)
-    | .four _ maxPriorityFee maxFee _ _ _ => .inr (maxPriorityFee, maxFee)
-  match selector with
-  | .inr (maxPriorityFee, maxFee) =>
-    if maxFee < maxPriorityFee then
-      .error "PriorityFeeGreaterThanMaxFeeError : priority fee greater than max fee"
-    if maxFee < benv.stat.baseFeePerGas then
-      .error "InsufficientMaxFeePerGasError"
-    let priorityFeePerGas := min maxPriorityFee (maxFee - benv.stat.baseFeePerGas)
-    effectiveGasPrice := priorityFeePerGas + benv.stat.baseFeePerGas
-    maxGasFee := tx.gas * maxFee
-  | .inl gasPrice =>
-    if gasPrice < benv.stat.baseFeePerGas then
-      .error "InvalidBlock : gas price below base fee"
-    effectiveGasPrice := gasPrice
-    maxGasFee := tx.gas * gasPrice
-  let mut blobVersionedHashes : List B256 := []
+  else
+    let txBlobGasUsed := calculateTotalBlobGas tx
+    if txBlobGasUsed > blobGasAvailable then
+      .error s!"BlobGasLimitExceededError : blob gas used = {txBlobGasUsed}, blob gas available = {blobGasAvailable}"
+    else
+      .ok txBlobGasUsed
+
+def checkTransactionDynamicGasFee
+    (baseFeePerGas gas maxPriorityFee maxFee : Nat) :
+    Except String (Nat × Nat) :=
+  if maxFee < maxPriorityFee then
+    .error "PriorityFeeGreaterThanMaxFeeError : priority fee greater than max fee"
+  else if maxFee < baseFeePerGas then
+    .error "InsufficientMaxFeePerGasError"
+  else
+    let priorityFeePerGas := min maxPriorityFee (maxFee - baseFeePerGas)
+    .ok ⟨priorityFeePerGas + baseFeePerGas, gas * maxFee⟩
+
+def checkTransactionLegacyGasFee
+    (baseFeePerGas gas gasPrice : Nat) :
+    Except String (Nat × Nat) :=
+  if gasPrice < baseFeePerGas then
+    .error "InvalidBlock : gas price below base fee"
+  else
+    .ok ⟨gasPrice, gas * gasPrice⟩
+
+def checkTransactionGasFee (benv : Benv) (tx : Tx) :
+    Except String (Nat × Nat) :=
+  match tx.type with
+  | .zero gasPrice _ =>
+    checkTransactionLegacyGasFee benv.stat.baseFeePerGas tx.gas gasPrice
+  | .one _ gasPrice _ _ =>
+    checkTransactionLegacyGasFee benv.stat.baseFeePerGas tx.gas gasPrice
+  | .two _ maxPriorityFee maxFee _ _ =>
+    checkTransactionDynamicGasFee benv.stat.baseFeePerGas tx.gas
+      maxPriorityFee maxFee
+  | .three _ maxPriorityFee maxFee _ _ _ _ =>
+    checkTransactionDynamicGasFee benv.stat.baseFeePerGas tx.gas
+      maxPriorityFee maxFee
+  | .four _ maxPriorityFee maxFee _ _ _ =>
+    checkTransactionDynamicGasFee benv.stat.baseFeePerGas tx.gas
+      maxPriorityFee maxFee
+
+def checkTransactionBlobData
+    (benv : Benv) (tx : Tx) (maxGasFee : Nat) :
+    Except String (Nat × List B256) :=
   match tx.type with
   | .three _ _ _ _ _ maxBlobFee blobHashes =>
     if blobHashes.isEmpty then
       .error "NoBlobDataError : no blob data in transaction"
-    if List.any blobHashes (λ bvh => bvh.toB8L[0]! ≠ versionedHashVersionKzg) then
+    else if List.any blobHashes (λ bvh => bvh.toB8L[0]! ≠ versionedHashVersionKzg) then
       .error "InvalidBlobVersionedHashError : invalid blob versioned hash"
-    let blobGasPrice := calculate_blob_gas_price benv.stat.excessBlobGas
-    if maxBlobFee < blobGasPrice then
-      .error "InsufficientMaxFeePerBlobGasError : insufficient max fee per blob gas"
-    maxGasFee := maxGasFee + calculateTotalBlobGas tx * maxBlobFee
-    blobVersionedHashes := blobHashes
-  | _ => .ok ()
+    else
+      let blobGasPrice := calculate_blob_gas_price benv.stat.excessBlobGas
+      if maxBlobFee < blobGasPrice then
+        .error "InsufficientMaxFeePerBlobGasError : insufficient max fee per blob gas"
+      else
+        .ok ⟨maxGasFee + calculateTotalBlobGas tx * maxBlobFee, blobHashes⟩
+  | _ => .ok ⟨maxGasFee, []⟩
+
+def checkTransactionReceiver (tx : Tx) : Except String Unit :=
   if tx.isTypeThree ∨ tx.isTypeFour then
     if tx.type.receiver?.isNone then
       .error "TransactionTypeContractCreationError : receiver is none for type 3 or 4 tx"
+    else
+      .ok ()
+  else
+    .ok ()
+
+def checkTransactionAuthorizationList (tx : Tx) : Except String Unit :=
   match tx.type with
   | .four _ _ _ _ _ [] =>
     .error "EmptyAuthorizationListError : empty authorization list"
   | _ => .ok ()
-    if senderAccount.nonce > tx.nonce then
-      .error "NonceMismatchError : nonce too low"
-    else if senderAccount.nonce < tx.nonce then
-      .error "NonceMismatchError : nonce too high"
-    if senderAccount.bal.toNat < maxGasFee + tx.value then
-      .error s!"InsufficientBalanceError : sender balance ({senderAccount.bal.toNat}) < max gas fee ({maxGasFee}) + tx value ({tx.value})"
-    if ¬ (senderAccount.code.isEmpty ∨ isValidDelegation senderAccount.code) then
-      .error "InvalidSenderError : not EOA"
-    .ok ⟨
-      senderAddress,
-      effectiveGasPrice,
-      blobVersionedHashes,
-      txBlobGasUsed
-    ⟩
+
+def checkTransactionSenderCode (senderAccount : Acct) :
+    Except String Unit :=
+  if ¬ (senderAccount.code.isEmpty ∨ isValidDelegation senderAccount.code) then
+    .error "InvalidSenderError : not EOA"
+  else
+    .ok ()
+
+def checkTransactionSenderAccount
+    (senderAccount : Acct) (tx : Tx) (maxGasFee : Nat) :
+    Except String Unit :=
+  if senderAccount.nonce > tx.nonce then
+    .error "NonceMismatchError : nonce too low"
+  else if senderAccount.nonce < tx.nonce then
+    .error "NonceMismatchError : nonce too high"
+  else if senderAccount.bal.toNat < maxGasFee + tx.value then
+    .error s!"InsufficientBalanceError : sender balance ({senderAccount.bal.toNat}) < max gas fee ({maxGasFee}) + tx value ({tx.value})"
+  else
+    checkTransactionSenderCode senderAccount
+
+-- check_transaction
+def checkTransaction (benv : Benv) (blockOut : BlockOutput) (tx : Tx) :
+  Except String (Adr × Nat × List B256 × Nat) := do
+  let txBlobGasUsed ← checkTransactionGasLimits benv blockOut tx
+  let senderAddress ← recoverSender benv.stat.chainId tx
+  let senderAccount := benv.state.get senderAddress
+  let ⟨effectiveGasPrice, maxGasFee⟩ ← checkTransactionGasFee benv tx
+  let ⟨maxGasFee, blobVersionedHashes⟩ ←
+    checkTransactionBlobData benv tx maxGasFee
+  checkTransactionReceiver tx
+  checkTransactionAuthorizationList tx
+  checkTransactionSenderAccount senderAccount tx maxGasFee
+  .ok ⟨
+    senderAddress,
+    effectiveGasPrice,
+    blobVersionedHashes,
+    txBlobGasUsed
+  ⟩
 
 def calculateIntrinsicCost (tx: Tx) : Nat × Nat :=
   let tokensInCalldata : Nat :=
