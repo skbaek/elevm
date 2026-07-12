@@ -1956,6 +1956,59 @@ def sstore_new_refund_counter (new_value : B256)
       rc''
   else rc
 
+/-- The read-only-World core of `BALANCE`.  Its mutable result contains only
+    `Mach` and `Meta`: it pops the address operand, charges the warm/cold
+    account-access cost, records a cold access, and pushes the balance read
+    from `World`. -/
+def Rinst.balanceCore (world : World) (mach : Mach) (view : Meta) :
+    Footprint.Outcome (Mach × Meta) Unit :=
+  match mach.pop with
+  | .error (err, mach') => .error (err, (mach', view))
+  | .ok (x, mach') =>
+    let a := x.toAdr
+    let warm := a ∈ view.accessedAddresses
+    let view' := if warm then view else view.addAccessedAddress a
+    let cost := if warm then gasWarmAccess else gasColdAccountAccess
+    match Mach.chargeGas cost mach' with
+    | .error (err, mach'') => .error (err, (mach'', view'))
+    | .ok (_, mach'') =>
+      match Mach.push (world.state.get a).bal mach'' with
+      | .error (err, mach''') => .error (err, (mach''', view'))
+      | .ok (_, mach''') => .ok ((), (mach''', view'))
+
+/-- Compatibility seam exposing the former `BALANCE` match-arm shape. -/
+theorem Rinst.balanceCore_compat (devm : Devm) :
+    liftMachMetaWorldExecution Rinst.balanceCore devm = (do
+      let ⟨x, devm⟩ ← devm.pop
+      let a := x.toAdr
+      let devm' ←
+        if a ∈ devm.accessedAddresses
+        then chargeGas gasWarmAccess devm
+        else chargeGas gasColdAccountAccess (addAccessedAddress devm a)
+      devm'.push (devm'.getBal a)) := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    cases stack with
+    | nil => rfl
+    | cons x xs =>
+      simp only [liftMachMetaWorldExecution, liftMachMetaExecution, liftMachMeta,
+        Footprint.toExecution, Footprint.liftOutcome, Rinst.balanceCore,
+        Mach.pop, Mach.chargeGas, Mach.push, Devm.pop, Devm.push, chargeGas,
+        addAccessedAddress, liftMach, liftMachExecution, liftMachMetaPure,
+        Devm.mach, Devm.meta, Devm.world, Devm.setMach, Devm.setMeta,
+        Devm.setMachMeta, Meta.addAccessedAddress, Devm.getBal, Devm.getAcct,
+        bind, Except.bind]
+      by_cases h : x.toAdr ∈ accessedAddresses
+      · cases hgas : safeSub gasLeft gasWarmAccess with
+        | none => simp [h, hgas]
+        | some gas =>
+          by_cases hs : xs.length < 1024 <;> simp [h, hgas, hs]
+      · cases hgas : safeSub gasLeft gasColdAccountAccess with
+        | none => simp [h, hgas]
+        | some gas =>
+          by_cases hs : xs.length < 1024 <;> simp [h, hgas, hs]
+
 def Rinst.runCore
   (pc : Nat)
   (devm : Devm)
@@ -1969,14 +2022,7 @@ def Rinst.runCore
   | .blobbasefee => do
     let fee := calculate_blob_gas_price sevm.benvStat.excessBlobGas
     pushItem fee.toB256 gBase devm
-  | .balance => do
-    let ⟨x, devm⟩ ← devm.pop
-    let a := x.toAdr
-    let devm' ←
-      if a ∈ devm.accessedAddresses
-      then chargeGas gasWarmAccess devm
-      else chargeGas gasColdAccountAccess (addAccessedAddress devm a)
-    devm'.push (devm'.getBal a)
+  | .balance => liftMachMetaWorldExecution Rinst.balanceCore devm
   | .origin => pushItem sevm.tenvStat.origin.toB256 gBase devm
   | .caller => pushItem sevm.caller.toB256 gBase devm
   | .callvalue => pushItem sevm.value gBase devm
@@ -2236,6 +2282,20 @@ def Rinst.runCore
           (sevm.benvStat.blockHashes.length - (sevm.benvStat.number - blockNumber))
           0
     devm.push hash
+
+/-- Stable branch-definition lemma for proofs that need the pre-partition
+    `BALANCE` match-arm shape. -/
+theorem Rinst.runCore_balance_def (pc : Nat) (devm : Devm) (sevm : Sevm) :
+    Rinst.runCore pc devm sevm .balance = (do
+      let ⟨x, devm⟩ ← devm.pop
+      let a := x.toAdr
+      let devm' ←
+        if a ∈ devm.accessedAddresses
+        then chargeGas gasWarmAccess devm
+        else chargeGas gasColdAccountAccess (addAccessedAddress devm a)
+      devm'.push (devm'.getBal a)) := by
+  rw [Rinst.runCore]
+  exact Rinst.balanceCore_compat devm
 
 def Rinst.run (evm : Evm) := Rinst.runCore evm.pc evm.dyna evm.sta
 
