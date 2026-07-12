@@ -1559,15 +1559,27 @@ def Dead (w : State) (a : Adr) : Prop :=
   | none => True
   | some x => x.Empty
 
+def Mach.memWrite (mach : Mach) (idx : Nat) (val : B8L) : Mach :=
+  {mach with memory := mach.memory.write idx val}
+
 def Devm.memWrite (devm : Devm) (idx : Nat) (val : B8L) : Devm :=
-  devm.withMemory <| devm.memory.write idx val
+  liftMachPure (Mach.memWrite · idx val) devm
+
+theorem Devm.memWrite_def (devm : Devm) (idx : Nat) (val : B8L) :
+    devm.memWrite idx val = (devm.withMemory <| devm.memory.write idx val) := rfl
 
 def Devm.memRead (devm : Devm) (index size : Nat) : B8L × Devm :=
   let ⟨val, mem⟩ := devm.memory.read index size
   ⟨val, devm.withMemory mem⟩
 
+def Mach.memExtends (mach : Mach) (pairs : List (Nat × Nat)) : Mach :=
+  {mach with memory := mach.memory.extends pairs}
+
 def Devm.memExtends (devm : Devm) (pairs : List (Nat × Nat)) : Devm :=
-  devm.withMemory <| devm.memory.extends pairs
+  liftMachPure (Mach.memExtends · pairs) devm
+
+theorem Devm.memExtends_def (devm : Devm) (pairs : List (Nat × Nat)) :
+    devm.memExtends pairs = (devm.withMemory <| devm.memory.extends pairs) := rfl
 
 def Devm.addLog (devm : Devm) (log : Log) : Devm :=
   devm.withLogs <| devm.logs ++ [log]
