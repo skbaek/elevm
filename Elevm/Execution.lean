@@ -1385,15 +1385,67 @@ def Prod.mapFst {α₁ : Type u₁} {α₂ : Type u₂} {β : Type v} (f : α₁
 def Devm.popToNat (devm : Devm) : Except (String × Devm) (Nat × Devm) :=
   devm.pop <&> Prod.mapFst B256.toNat
 
-def Devm.popToAdr (devm : Devm) : Except (String × Devm) (Adr × Devm) :=
-  devm.pop <&> Prod.mapFst B256.toAdr
+def Mach.pop (mach : Mach) : Footprint.Outcome Mach B256 :=
+  match mach.stack with
+  | [] => .error ⟨"StackUnderflowError", mach⟩
+  | x :: xs => .ok ⟨x, {mach with stack := xs}⟩
 
-def Devm.popN (devm : Devm) : Nat → Except (String × Devm) (List B256 × Devm)
-  | 0 => .ok ⟨[], devm⟩
-  | n + 1 => do
-    let ⟨x, devm'⟩ ← devm.pop
-    let ⟨xs, devm''⟩ ← devm'.popN n
-    .ok ⟨x :: xs, devm''⟩
+def Mach.popToAdr (mach : Mach) : Footprint.Outcome Mach Adr :=
+  match mach.pop with
+  | .error err => .error err
+  | .ok ⟨x, mach'⟩ => .ok ⟨x.toAdr, mach'⟩
+
+def Devm.popToAdr (devm : Devm) : Except (String × Devm) (Adr × Devm) :=
+  liftMach Mach.popToAdr devm
+
+theorem Devm.popToAdr_def (devm : Devm) :
+    devm.popToAdr = (devm.pop <&> Prod.mapFst B256.toAdr) := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    cases stack <;> rfl
+
+def Mach.popN (mach : Mach) : Nat → Footprint.Outcome Mach (List B256)
+  | 0 => .ok ⟨[], mach⟩
+  | n + 1 =>
+    match mach.pop with
+    | .error err => .error err
+    | .ok ⟨x, mach'⟩ =>
+      match mach'.popN n with
+      | .error err => .error err
+      | .ok ⟨xs, mach''⟩ => .ok ⟨x :: xs, mach''⟩
+
+def Devm.popN (devm : Devm) (n : Nat) :
+    Except (String × Devm) (List B256 × Devm) :=
+  liftMach (Mach.popN · n) devm
+
+theorem Devm.popN_def (devm : Devm) (n : Nat) : devm.popN n =
+    (match n with
+    | 0 => .ok ⟨[], devm⟩
+    | n + 1 => do
+      let ⟨x, devm'⟩ ← devm.pop
+      let ⟨xs, devm''⟩ ← devm'.popN n
+      .ok ⟨x :: xs, devm''⟩) := by
+  cases n with
+  | zero => rfl
+  | succ n =>
+    cases devm with
+    | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+        error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+      cases stack with
+      | nil => rfl
+      | cons x xs =>
+        cases h : Mach.popN { stack := xs, memory := memory, gasLeft := gasLeft } n with
+        | error err =>
+          rcases err with ⟨msg, mach'⟩
+          cases mach'
+          simp only [Devm.popN, Mach.popN, Mach.pop, liftMach, Footprint.liftOutcome,
+            Devm.pop, Devm.mach, Devm.setMach, bind, Except.bind, h]
+        | ok out =>
+          rcases out with ⟨vals, mach'⟩
+          cases mach'
+          simp only [Devm.popN, Mach.popN, Mach.pop, liftMach, Footprint.liftOutcome,
+            Devm.pop, Devm.mach, Devm.setMach, bind, Except.bind, h]
 
 def pushItem (x : B256) (c : Nat) (devm : Devm) : Execution := do
   chargeGas c devm >>= Devm.push x -->>= Evm.incrPc
