@@ -1518,11 +1518,42 @@ theorem pushItem_def (x : B256) (c : Nat) (devm : Devm) :
 def access_cost (x : Adr) (a : AdrSet) : Nat :=
   if x ∈ a then gasWarmAccess else gasColdAccountAccess
 
+def Meta.addAccessedAddress (view : Meta) (a : Adr) : Meta :=
+  {view with accessedAddresses := view.accessedAddresses.insert a}
+
 def addAccessedAddress (devm : Devm) (a : Adr) : Devm :=
-  devm.withAccessedAddresses (devm.accessedAddresses.insert a)
+  liftMachMetaPure (fun mach view => (mach, view.addAccessedAddress a)) devm
+
+theorem addAccessedAddress_compat (devm : Devm) (a : Adr) :
+    liftMachMetaPure (fun mach view => (mach, view.addAccessedAddress a)) devm =
+      devm.withAccessedAddresses (devm.accessedAddresses.insert a) := rfl
+
+theorem addAccessedAddress_def (devm : Devm) (a : Adr) :
+    addAccessedAddress devm a =
+      devm.withAccessedAddresses (devm.accessedAddresses.insert a) := rfl
+
+theorem addAccessedAddress_accessedAddresses (devm : Devm) (a : Adr) :
+    (addAccessedAddress devm a).accessedAddresses =
+      devm.accessedAddresses.insert a := rfl
+
+def Meta.addAccessedStorageKey (view : Meta) (a : Adr) (k : B256) : Meta :=
+  {view with accessedStorageKeys := view.accessedStorageKeys.insert ⟨a, k⟩}
 
 def addAccessedStorageKey (devm : Devm) (a : Adr) (k : B256) : Devm :=
-  devm.withAccessedStorageKeys (devm.accessedStorageKeys.insert ⟨a, k⟩)
+  liftMachMetaPure (fun mach view => (mach, view.addAccessedStorageKey a k)) devm
+
+theorem addAccessedStorageKey_compat (devm : Devm) (a : Adr) (k : B256) :
+    liftMachMetaPure (fun mach view => (mach, view.addAccessedStorageKey a k)) devm =
+      devm.withAccessedStorageKeys (devm.accessedStorageKeys.insert ⟨a, k⟩) := rfl
+
+theorem addAccessedStorageKey_def (devm : Devm) (a : Adr) (k : B256) :
+    addAccessedStorageKey devm a k =
+      devm.withAccessedStorageKeys (devm.accessedStorageKeys.insert ⟨a, k⟩) := rfl
+
+theorem addAccessedStorageKey_accessedStorageKeys
+    (devm : Devm) (a : Adr) (k : B256) :
+    (addAccessedStorageKey devm a k).accessedStorageKeys =
+      devm.accessedStorageKeys.insert ⟨a, k⟩ := rfl
 
 def addAccountToDelete (devm : Devm) (a : Adr) : Devm :=
   devm.withAccountsToDelete (devm.accountsToDelete.insert a)
@@ -1698,8 +1729,21 @@ def Devm.memExtends (devm : Devm) (pairs : List (Nat × Nat)) : Devm :=
 theorem Devm.memExtends_def (devm : Devm) (pairs : List (Nat × Nat)) :
     devm.memExtends pairs = (devm.withMemory <| devm.memory.extends pairs) := rfl
 
+def Meta.addLog (view : Meta) (log : Log) : Meta :=
+  {view with logs := view.logs ++ [log]}
+
 def Devm.addLog (devm : Devm) (log : Log) : Devm :=
-  devm.withLogs <| devm.logs ++ [log]
+  liftMachMetaPure (fun mach view => (mach, view.addLog log)) devm
+
+theorem Devm.addLog_compat (devm : Devm) (log : Log) :
+    liftMachMetaPure (fun mach view => (mach, view.addLog log)) devm =
+      devm.withLogs (devm.logs ++ [log]) := rfl
+
+theorem Devm.addLog_def (devm : Devm) (log : Log) :
+    devm.addLog log = devm.withLogs (devm.logs ++ [log]) := rfl
+
+theorem Devm.addLog_logs (devm : Devm) (log : Log) :
+    (devm.addLog log).logs = devm.logs ++ [log] := rfl
 
 namespace Footprint.Calibration
 
@@ -1717,10 +1761,6 @@ def popCore (mach : Mach) : Footprint.Outcome Mach B256 :=
 def chargeGasCore (cost : Nat) (mach : Mach) : Footprint.Outcome Mach Unit :=
   Mach.chargeGas cost mach
 
-/-- Shadow of `addAccessedAddress` expressed as a pure Meta update. -/
-def addAccessedAddressCore (a : Adr) (view : Meta) : Meta :=
-  {view with accessedAddresses := view.accessedAddresses.insert a}
-
 /-- Minimal read-only-World core: read a balance and push it onto the Mach
     stack while leaving Meta unchanged. -/
 def pushBalanceCore (a : Adr) (world : World) (mach : Mach) (view : Meta) :
@@ -1735,9 +1775,6 @@ def popShadow (devm : Devm) : Except (String × Devm) (B256 × Devm) :=
 
 def chargeGasShadow (cost : Nat) (devm : Devm) : Execution :=
   liftMachExecution (chargeGasCore cost) devm
-
-def addAccessedAddressShadow (devm : Devm) (a : Adr) : Devm :=
-  liftMachMetaPure (fun mach view => (mach, addAccessedAddressCore a view)) devm
 
 def pushBalanceShadow (devm : Devm) (a : Adr) : Execution :=
   liftMachMetaWorldExecution (pushBalanceCore a) devm
@@ -1760,9 +1797,6 @@ theorem lift_chargeGasCore (cost : Nat) (devm : Devm) :
     unfold chargeGasShadow liftMachExecution liftMach Footprint.toExecution
       Footprint.liftOutcome chargeGasCore chargeGas Devm.mach Devm.setMach
     cases safeSub gasLeft cost <;> rfl
-
-theorem lift_addAccessedAddressCore (devm : Devm) (a : Adr) :
-    addAccessedAddressShadow devm a = addAccessedAddress devm a := rfl
 
 end Footprint.Calibration
 
