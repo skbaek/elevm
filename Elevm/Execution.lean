@@ -1221,10 +1221,25 @@ def toExcept (onExhausted : ε) (x : Fueled ε α) : Except ε α :=
 
 end Fueled
 
-def chargeGas (cost : Nat) (devm : Devm) : Execution := do
-  match safeSub devm.gasLeft cost with
-  | none => .error ⟨"OutOfGasError", devm⟩
-  | some gas => .ok {devm with gasLeft := gas}
+def Mach.chargeGas (cost : Nat) (mach : Mach) : Footprint.Outcome Mach Unit :=
+  match safeSub mach.gasLeft cost with
+  | none => .error ("OutOfGasError", mach)
+  | some gas => .ok ((), {mach with gasLeft := gas})
+
+def chargeGas (cost : Nat) (devm : Devm) : Execution :=
+  liftMachExecution (Mach.chargeGas cost) devm
+
+theorem chargeGas_def (cost : Nat) (devm : Devm) :
+    chargeGas cost devm = (do
+      match safeSub devm.gasLeft cost with
+      | none => .error ⟨"OutOfGasError", devm⟩
+      | some gas => .ok {devm with gasLeft := gas}) := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    unfold chargeGas liftMachExecution liftMach Footprint.toExecution
+      Footprint.liftOutcome Mach.chargeGas Devm.mach Devm.setMach
+    cases safeSub gasLeft cost <;> rfl
 
 inductive Ninst : Type
   | reg : Rinst → Ninst
@@ -1367,11 +1382,6 @@ def fakeExp (fac num den : Nat) : Nat :=
 
 def calculate_blob_gas_price (excessBlobGas : Nat) : Nat :=
   fakeExp 1 excessBlobGas blobBaseFeeUpdateFraction
-
-def Mach.chargeGas (cost : Nat) (mach : Mach) : Footprint.Outcome Mach Unit :=
-  match safeSub mach.gasLeft cost with
-  | none => .error ⟨"OutOfGasError", mach⟩
-  | some gas => .ok ⟨(), {mach with gasLeft := gas}⟩
 
 def Mach.push (x : B256) (mach : Mach) : Footprint.Outcome Mach Unit :=
   if mach.stack.length < 1024
@@ -1698,9 +1708,7 @@ def popCore (mach : Mach) : Footprint.Outcome Mach B256 :=
 
 /-- Shadow of `chargeGas` retaining its Mach state on both outcomes. -/
 def chargeGasCore (cost : Nat) (mach : Mach) : Footprint.Outcome Mach Unit :=
-  match safeSub mach.gasLeft cost with
-  | none => .error ("OutOfGasError", mach)
-  | some gas => .ok ((), {mach with gasLeft := gas})
+  Mach.chargeGas cost mach
 
 /-- Shadow of `addAccessedAddress` expressed as a pure Meta update. -/
 def addAccessedAddressCore (a : Adr) (view : Meta) : Meta :=
