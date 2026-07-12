@@ -1739,22 +1739,127 @@ theorem lift_addAccessedAddressCore (devm : Devm) (a : Adr) :
 
 end Footprint.Calibration
 
-def applyUnary (f : B256 → B256) (cost : Nat) (devm : Devm) : Execution := do
-  let ⟨x, devm'⟩ ← devm.pop
-  pushItem (f x) cost devm'
+def Mach.applyUnary (f : B256 → B256) (cost : Nat) (mach : Mach) :
+    Footprint.Outcome Mach Unit :=
+  match mach.pop with
+  | .error err => .error err
+  | .ok ⟨x, mach'⟩ => Mach.pushItem (f x) cost mach'
+
+def Mach.applyBinary (f : B256 → B256 → B256) (cost : Nat) (mach : Mach) :
+    Footprint.Outcome Mach Unit :=
+  match mach.pop with
+  | .error err => .error err
+  | .ok ⟨x, mach'⟩ =>
+    match mach'.pop with
+    | .error err => .error err
+    | .ok ⟨y, mach''⟩ => Mach.pushItem (f x y) cost mach''
+
+def Mach.applyTernary (f : B256 → B256 → B256 → B256) (cost : Nat)
+    (mach : Mach) : Footprint.Outcome Mach Unit :=
+  match mach.pop with
+  | .error err => .error err
+  | .ok ⟨x, mach'⟩ =>
+    match mach'.pop with
+    | .error err => .error err
+    | .ok ⟨y, mach''⟩ =>
+      match mach''.pop with
+      | .error err => .error err
+      | .ok ⟨z, mach'''⟩ => Mach.pushItem (f x y z) cost mach'''
+
+def applyUnary (f : B256 → B256) (cost : Nat) (devm : Devm) : Execution :=
+  liftMachExecution (Mach.applyUnary f cost) devm
 
 def applyBinary (f : B256 → B256 → B256)
-  (cost : Nat) (devm : Devm) : Execution := do
-  let ⟨x, devm'⟩ ← devm.pop
-  let ⟨y, devm''⟩ ← devm'.pop
-  pushItem (f x y) cost devm''
+  (cost : Nat) (devm : Devm) : Execution :=
+  liftMachExecution (Mach.applyBinary f cost) devm
 
 def applyTernary (f : B256 → B256 → B256 → B256)
-  (cost : Nat) (devm : Devm) : Execution := do
-  let ⟨x, devm'⟩ ← devm.pop
-  let ⟨y, devm''⟩ ← devm'.pop
-  let ⟨z, devm'''⟩ ← devm''.pop
-  pushItem (f x y z) cost devm'''
+  (cost : Nat) (devm : Devm) : Execution :=
+  liftMachExecution (Mach.applyTernary f cost) devm
+
+theorem applyUnary_def (f : B256 → B256) (cost : Nat) (devm : Devm) :
+    applyUnary f cost devm = (do
+      let ⟨x, devm'⟩ ← devm.pop
+      pushItem (f x) cost devm') := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    cases stack with
+    | nil => rfl
+    | cons x xs =>
+      cases h : Mach.pushItem (f x) cost { stack := xs, memory := memory, gasLeft := gasLeft } with
+      | error err =>
+        rcases err with ⟨msg, mach'⟩
+        cases mach'
+        simp only [applyUnary, Mach.applyUnary, Mach.pop, pushItem, liftMachExecution,
+          liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+          Devm.setMach, bind, Except.bind, h]
+      | ok out =>
+        rcases out with ⟨_, mach'⟩
+        cases mach'
+        simp only [applyUnary, Mach.applyUnary, Mach.pop, pushItem, liftMachExecution,
+          liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+          Devm.setMach, bind, Except.bind, h]
+
+theorem applyBinary_def (f : B256 → B256 → B256) (cost : Nat) (devm : Devm) :
+    applyBinary f cost devm = (do
+      let ⟨x, devm'⟩ ← devm.pop
+      let ⟨y, devm''⟩ ← devm'.pop
+      pushItem (f x y) cost devm'') := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    cases stack with
+    | nil => rfl
+    | cons x xs =>
+      cases xs with
+      | nil => rfl
+      | cons y ys =>
+        cases h : Mach.pushItem (f x y) cost { stack := ys, memory := memory, gasLeft := gasLeft } with
+        | error err =>
+          rcases err with ⟨msg, mach'⟩
+          cases mach'
+          simp only [applyBinary, Mach.applyBinary, Mach.pop, pushItem, liftMachExecution,
+            liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+            Devm.setMach, bind, Except.bind, h]
+        | ok out =>
+          rcases out with ⟨_, mach'⟩
+          cases mach'
+          simp only [applyBinary, Mach.applyBinary, Mach.pop, pushItem, liftMachExecution,
+            liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+            Devm.setMach, bind, Except.bind, h]
+
+theorem applyTernary_def (f : B256 → B256 → B256 → B256) (cost : Nat) (devm : Devm) :
+    applyTernary f cost devm = (do
+      let ⟨x, devm'⟩ ← devm.pop
+      let ⟨y, devm''⟩ ← devm'.pop
+      let ⟨z, devm'''⟩ ← devm''.pop
+      pushItem (f x y z) cost devm''') := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    cases stack with
+    | nil => rfl
+    | cons x xs =>
+      cases xs with
+      | nil => rfl
+      | cons y ys =>
+        cases ys with
+        | nil => rfl
+        | cons z zs =>
+          cases h : Mach.pushItem (f x y z) cost { stack := zs, memory := memory, gasLeft := gasLeft } with
+          | error err =>
+            rcases err with ⟨msg, mach'⟩
+            cases mach'
+            simp only [applyTernary, Mach.applyTernary, Mach.pop, pushItem, liftMachExecution,
+              liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+              Devm.setMach, bind, Except.bind, h]
+          | ok out =>
+            rcases out with ⟨_, mach'⟩
+            cases mach'
+            simp only [applyTernary, Mach.applyTernary, Mach.pop, pushItem, liftMachExecution,
+              liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+              Devm.setMach, bind, Except.bind, h]
 
 def List.swap {ξ} : List ξ → Nat → Option (List ξ)
   | [], _ => none
