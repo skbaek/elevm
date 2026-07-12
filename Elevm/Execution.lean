@@ -1368,11 +1368,30 @@ def fakeExp (fac num den : Nat) : Nat :=
 def calculate_blob_gas_price (excessBlobGas : Nat) : Nat :=
   fakeExp 1 excessBlobGas blobBaseFeeUpdateFraction
 
-def Devm.push (x : B256) (devm : Devm) : Execution := do
-  .assert
-    (devm.stack.length < 1024)
-    ⟨"StackOverflowError", devm⟩
-  .ok {devm with stack := x :: devm.stack}
+def Mach.chargeGas (cost : Nat) (mach : Mach) : Footprint.Outcome Mach Unit :=
+  match safeSub mach.gasLeft cost with
+  | none => .error ⟨"OutOfGasError", mach⟩
+  | some gas => .ok ⟨(), {mach with gasLeft := gas}⟩
+
+def Mach.push (x : B256) (mach : Mach) : Footprint.Outcome Mach Unit :=
+  if mach.stack.length < 1024
+  then .ok ⟨(), {mach with stack := x :: mach.stack}⟩
+  else .error ⟨"StackOverflowError", mach⟩
+
+def Devm.push (x : B256) (devm : Devm) : Execution :=
+  liftMachExecution (Mach.push x) devm
+
+theorem Devm.push_def (x : B256) (devm : Devm) : Devm.push x devm = (do
+    .assert
+      (devm.stack.length < 1024)
+      ⟨"StackOverflowError", devm⟩
+    .ok {devm with stack := x :: devm.stack}) := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    simp only [Devm.push, Mach.push, liftMachExecution, liftMach, Footprint.toExecution,
+      Footprint.liftOutcome, Devm.mach, Devm.setMach, Except.assert, bind, Except.bind]
+    split_ifs <;> rfl
 
 def Devm.pop (devm : Devm) : Except (String × Devm) (B256 × Devm) := do
   match devm.stack with
@@ -1447,8 +1466,25 @@ theorem Devm.popN_def (devm : Devm) (n : Nat) : devm.popN n =
           simp only [Devm.popN, Mach.popN, Mach.pop, liftMach, Footprint.liftOutcome,
             Devm.pop, Devm.mach, Devm.setMach, bind, Except.bind, h]
 
-def pushItem (x : B256) (c : Nat) (devm : Devm) : Execution := do
-  chargeGas c devm >>= Devm.push x -->>= Evm.incrPc
+def Mach.pushItem (x : B256) (c : Nat) (mach : Mach) : Footprint.Outcome Mach Unit :=
+  match Mach.chargeGas c mach with
+  | .error err => .error err
+  | .ok ⟨_, mach'⟩ => Mach.push x mach'
+
+def pushItem (x : B256) (c : Nat) (devm : Devm) : Execution :=
+  liftMachExecution (Mach.pushItem x c) devm
+
+theorem pushItem_def (x : B256) (c : Nat) (devm : Devm) :
+    pushItem x c devm = (chargeGas c devm >>= Devm.push x) := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    simp only [pushItem, Mach.pushItem, Mach.chargeGas, Mach.push, chargeGas, Devm.push,
+      liftMachExecution, liftMach, Footprint.toExecution, Footprint.liftOutcome,
+      Devm.mach, Devm.setMach, bind, Except.bind]
+    cases safeSub gasLeft c with
+    | none => rfl
+    | some gas => dsimp only
 
 def access_cost (x : Adr) (a : AdrSet) : Nat :=
   if x ∈ a then gasWarmAccess else gasColdAccountAccess
