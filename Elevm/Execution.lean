@@ -1086,6 +1086,85 @@ def safeSub {ξ} [Sub ξ] [LE ξ] [DecidableLE ξ] (x y : ξ) : Option ξ :=
 
 abbrev Execution : Type := Except (String × Devm) Devm
 
+/-- A normalized result for a footprint-restricted core.  Both branches retain
+    the core mutable state so a lift can reattach changes made before an error. -/
+abbrev Footprint.Outcome (σ α : Type) : Type :=
+  Except (String × σ) (α × σ)
+
+namespace Footprint
+
+/-- Lift a normalized core outcome by projecting and reattaching its mutable
+    state to the original flat `Devm`. -/
+def liftOutcome (get : Devm → σ) (set : Devm → σ → Devm)
+    (core : σ → Outcome σ α) (devm : Devm) :
+    Except (String × Devm) (α × Devm) :=
+  match core (get devm) with
+  | .error (err, view) => .error (err, set devm view)
+  | .ok (value, view) => .ok (value, set devm view)
+
+/-- Forget the unit payload of a lifted normalized outcome. -/
+def toExecution (outcome : Except (String × Devm) (Unit × Devm)) : Execution :=
+  match outcome with
+  | .error err => .error err
+  | .ok (_, devm) => .ok devm
+
+end Footprint
+
+/-- Lift a Mach-only payload core. -/
+def liftMach (core : Mach → Footprint.Outcome Mach α) (devm : Devm) :
+    Except (String × Devm) (α × Devm) :=
+  Footprint.liftOutcome Devm.mach Devm.setMach core devm
+
+/-- Lift a pure Mach-only update. -/
+def liftMachPure (core : Mach → Mach) (devm : Devm) : Devm :=
+  devm.setMach (core devm.mach)
+
+/-- Lift a normalized Mach-only core to `Execution`. -/
+def liftMachExecution (core : Mach → Footprint.Outcome Mach Unit)
+    (devm : Devm) : Execution :=
+  Footprint.toExecution (liftMach core devm)
+
+/-- Reattach a paired Mach+Meta mutable output to a flat `Devm`. -/
+def Devm.setMachMeta (devm : Devm) (view : Mach × Meta) : Devm :=
+  (devm.setMach view.1).setMeta view.2
+
+/-- Lift a Mach+Meta payload core.  The mutable output contains no `World`. -/
+def liftMachMeta
+    (core : Mach → Meta → Footprint.Outcome (Mach × Meta) α)
+    (devm : Devm) : Except (String × Devm) (α × Devm) :=
+  Footprint.liftOutcome
+    (fun d => (d.mach, d.meta)) Devm.setMachMeta
+    (fun view => core view.1 view.2) devm
+
+/-- Lift a pure Mach+Meta update. -/
+def liftMachMetaPure (core : Mach → Meta → Mach × Meta) (devm : Devm) : Devm :=
+  devm.setMachMeta (core devm.mach devm.meta)
+
+/-- Lift a normalized Mach+Meta core to `Execution`. -/
+def liftMachMetaExecution
+    (core : Mach → Meta → Footprint.Outcome (Mach × Meta) Unit)
+    (devm : Devm) : Execution :=
+  Footprint.toExecution (liftMachMeta core devm)
+
+/-- Lift a Mach+Meta payload core with read-only access to `World`.
+    `World` is an input only and cannot occur in the mutable output. -/
+def liftMachMetaWorld
+    (core : World → Mach → Meta → Footprint.Outcome (Mach × Meta) α)
+    (devm : Devm) : Except (String × Devm) (α × Devm) :=
+  liftMachMeta (core devm.world) devm
+
+/-- Lift a pure Mach+Meta update with read-only access to `World`. -/
+def liftMachMetaWorldPure
+    (core : World → Mach → Meta → Mach × Meta) (devm : Devm) : Devm :=
+  liftMachMetaPure (core devm.world) devm
+
+/-- Lift a normalized Mach+Meta core with read-only `World` access to
+    `Execution`. -/
+def liftMachMetaWorldExecution
+    (core : World → Mach → Meta → Footprint.Outcome (Mach × Meta) Unit)
+    (devm : Devm) : Execution :=
+  liftMachMetaExecution (core devm.world) devm
+
 /-- A fuel-bounded computation.  The outer `Option` records whether the
 computation exhausted its recursion fuel; the inner `Except` is the ordinary
 semantic result. -/
@@ -1492,6 +1571,73 @@ def Devm.memExtends (devm : Devm) (pairs : List (Nat × Nat)) : Devm :=
 
 def Devm.addLog (devm : Devm) (log : Log) : Devm :=
   devm.withLogs <| devm.logs ++ [log]
+
+namespace Footprint.Calibration
+
+/-- Shadow of `Devm.memWrite` expressed as a pure Mach update. -/
+def memWriteCore (idx : Nat) (val : B8L) (mach : Mach) : Mach :=
+  {mach with memory := mach.memory.write idx val}
+
+/-- Shadow of `Devm.pop` retaining its Mach state on both outcomes. -/
+def popCore (mach : Mach) : Footprint.Outcome Mach B256 :=
+  match mach.stack with
+  | [] => .error ("StackUnderflowError", mach)
+  | x :: xs => .ok (x, {mach with stack := xs})
+
+/-- Shadow of `chargeGas` retaining its Mach state on both outcomes. -/
+def chargeGasCore (cost : Nat) (mach : Mach) : Footprint.Outcome Mach Unit :=
+  match safeSub mach.gasLeft cost with
+  | none => .error ("OutOfGasError", mach)
+  | some gas => .ok ((), {mach with gasLeft := gas})
+
+/-- Shadow of `addAccessedAddress` expressed as a pure Meta update. -/
+def addAccessedAddressCore (a : Adr) (view : Meta) : Meta :=
+  {view with accessedAddresses := view.accessedAddresses.insert a}
+
+/-- Minimal read-only-World core: read a balance and push it onto the Mach
+    stack while leaving Meta unchanged. -/
+def pushBalanceCore (a : Adr) (world : World) (mach : Mach) (view : Meta) :
+    Footprint.Outcome (Mach × Meta) Unit :=
+  .ok ((), ({mach with stack := (world.state.get a).bal :: mach.stack}, view))
+
+def memWriteShadow (devm : Devm) (idx : Nat) (val : B8L) : Devm :=
+  liftMachPure (memWriteCore idx val) devm
+
+def popShadow (devm : Devm) : Except (String × Devm) (B256 × Devm) :=
+  liftMach popCore devm
+
+def chargeGasShadow (cost : Nat) (devm : Devm) : Execution :=
+  liftMachExecution (chargeGasCore cost) devm
+
+def addAccessedAddressShadow (devm : Devm) (a : Adr) : Devm :=
+  liftMachMetaPure (fun mach view => (mach, addAccessedAddressCore a view)) devm
+
+def pushBalanceShadow (devm : Devm) (a : Adr) : Execution :=
+  liftMachMetaWorldExecution (pushBalanceCore a) devm
+
+theorem lift_memWriteCore (devm : Devm) (idx : Nat) (val : B8L) :
+    memWriteShadow devm idx val = devm.memWrite idx val := rfl
+
+theorem lift_popCore (devm : Devm) :
+    popShadow devm = devm.pop := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    cases stack <;> rfl
+
+theorem lift_chargeGasCore (cost : Nat) (devm : Devm) :
+    chargeGasShadow cost devm = chargeGas cost devm := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    unfold chargeGasShadow liftMachExecution liftMach Footprint.toExecution
+      Footprint.liftOutcome chargeGasCore chargeGas Devm.mach Devm.setMach
+    cases safeSub gasLeft cost <;> rfl
+
+theorem lift_addAccessedAddressCore (devm : Devm) (a : Adr) :
+    addAccessedAddressShadow devm a = addAccessedAddress devm a := rfl
+
+end Footprint.Calibration
 
 def applyUnary (f : B256 → B256) (cost : Nat) (devm : Devm) : Execution := do
   let ⟨x, devm'⟩ ← devm.pop
