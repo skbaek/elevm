@@ -3201,11 +3201,6 @@ def KeySet.toStrings (ks : KeySet) : List String :=
 
 instance : ToString KeySet := ⟨λ ks => String.joinln <| ks.toStrings⟩
 
-def Sta.toStringsCore (xs : Array B256) : Nat → List String
-  | 0 => []
-  | n + 1 => ("0x" ++ (xs.getD n 0).toHex) :: Sta.toStringsCore xs n
-
-
 def correctBlobHashVersion (h : B256) : Prop :=
   h.toB8L[0]! = 0x01
 
