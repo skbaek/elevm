@@ -863,6 +863,100 @@ structure Devm : Type where
   createdAccounts : AdrSet
   transientStorage : Tra
 
+@[ext]
+structure Mach : Type where
+  stack : List B256
+  memory : Mem
+  gasLeft : Nat
+
+@[ext]
+structure Meta : Type where
+  logs : List Log
+  refundCounter : Int
+  output : B8L
+  accountsToDelete : AdrSet
+  returnData : B8L
+  error : Option String
+  accessedAddresses : AdrSet
+  accessedStorageKeys : KeySet
+  createdAccounts : AdrSet
+
+@[ext]
+structure World : Type where
+  state : State
+  transientStorage : Tra
+
+def Devm.mach (devm : Devm) : Mach :=
+  { stack := devm.stack
+    memory := devm.memory
+    gasLeft := devm.gasLeft }
+
+def Devm.meta (devm : Devm) : Meta :=
+  { logs := devm.logs
+    refundCounter := devm.refundCounter
+    output := devm.output
+    accountsToDelete := devm.accountsToDelete
+    returnData := devm.returnData
+    error := devm.error
+    accessedAddresses := devm.accessedAddresses
+    accessedStorageKeys := devm.accessedStorageKeys
+    createdAccounts := devm.createdAccounts }
+
+def Devm.world (devm : Devm) : World :=
+  { state := devm.state
+    transientStorage := devm.transientStorage }
+
+def Devm.setMach (devm : Devm) (mach : Mach) : Devm :=
+  { devm with
+    stack := mach.stack
+    memory := mach.memory
+    gasLeft := mach.gasLeft }
+
+def Devm.setMeta (devm : Devm) (view : Meta) : Devm :=
+  { devm with
+    logs := view.logs
+    refundCounter := view.refundCounter
+    output := view.output
+    accountsToDelete := view.accountsToDelete
+    returnData := view.returnData
+    error := view.error
+    accessedAddresses := view.accessedAddresses
+    accessedStorageKeys := view.accessedStorageKeys
+    createdAccounts := view.createdAccounts }
+
+@[simp] theorem Devm.mach_setMach (devm : Devm) (mach : Mach) :
+    (devm.setMach mach).mach = mach := rfl
+
+@[simp] theorem Devm.meta_setMeta (devm : Devm) (view : Meta) :
+    (devm.setMeta view).meta = view := rfl
+
+@[simp] theorem Devm.setMach_mach (devm : Devm) :
+    devm.setMach devm.mach = devm := rfl
+
+@[simp] theorem Devm.setMeta_meta (devm : Devm) :
+    devm.setMeta devm.meta = devm := rfl
+
+@[simp] theorem Devm.setMach_setMach (devm : Devm) (mach mach' : Mach) :
+    (devm.setMach mach).setMach mach' = devm.setMach mach' := rfl
+
+@[simp] theorem Devm.setMeta_setMeta (devm : Devm) (view view' : Meta) :
+    (devm.setMeta view).setMeta view' = devm.setMeta view' := rfl
+
+@[simp] theorem Devm.meta_setMach (devm : Devm) (mach : Mach) :
+    (devm.setMach mach).meta = devm.meta := rfl
+
+@[simp] theorem Devm.world_setMach (devm : Devm) (mach : Mach) :
+    (devm.setMach mach).world = devm.world := rfl
+
+@[simp] theorem Devm.mach_setMeta (devm : Devm) (view : Meta) :
+    (devm.setMeta view).mach = devm.mach := rfl
+
+@[simp] theorem Devm.world_setMeta (devm : Devm) (view : Meta) :
+    (devm.setMeta view).world = devm.world := rfl
+
+theorem Devm.setMach_setMeta (devm : Devm) (mach : Mach) (view : Meta) :
+    (devm.setMach mach).setMeta view = (devm.setMeta view).setMach mach := rfl
+
 structure Sevm : Type where
   caller : Adr
   target : Option Adr
