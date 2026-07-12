@@ -1401,13 +1401,25 @@ def Devm.pop (devm : Devm) : Except (String × Devm) (B256 × Devm) := do
 def Prod.mapFst {α₁ : Type u₁} {α₂ : Type u₂} {β : Type v} (f : α₁ → α₂) : α₁ × β → α₂ × β :=
   Prod.map f id
 
-def Devm.popToNat (devm : Devm) : Except (String × Devm) (Nat × Devm) :=
-  devm.pop <&> Prod.mapFst B256.toNat
-
 def Mach.pop (mach : Mach) : Footprint.Outcome Mach B256 :=
   match mach.stack with
   | [] => .error ⟨"StackUnderflowError", mach⟩
   | x :: xs => .ok ⟨x, {mach with stack := xs}⟩
+
+def Mach.popToNat (mach : Mach) : Footprint.Outcome Mach Nat :=
+  match mach.pop with
+  | .error err => .error err
+  | .ok ⟨x, mach'⟩ => .ok ⟨x.toNat, mach'⟩
+
+def Devm.popToNat (devm : Devm) : Except (String × Devm) (Nat × Devm) :=
+  liftMach Mach.popToNat devm
+
+theorem Devm.popToNat_def (devm : Devm) :
+    devm.popToNat = (devm.pop <&> Prod.mapFst B256.toNat) := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    cases stack <;> rfl
 
 def Mach.popToAdr (mach : Mach) : Footprint.Outcome Mach Adr :=
   match mach.pop with
