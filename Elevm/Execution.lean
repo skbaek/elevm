@@ -1403,18 +1403,25 @@ theorem Devm.push_def (x : B256) (devm : Devm) : Devm.push x devm = (do
       Footprint.liftOutcome, Devm.mach, Devm.setMach, Except.assert, bind, Except.bind]
     split_ifs <;> rfl
 
-def Devm.pop (devm : Devm) : Except (String × Devm) (B256 × Devm) := do
-  match devm.stack with
-  | [] => .error ⟨"StackUnderflowError", devm⟩
-  | x :: xs => .ok ⟨x, {devm with stack := xs}⟩
-
-def Prod.mapFst {α₁ : Type u₁} {α₂ : Type u₂} {β : Type v} (f : α₁ → α₂) : α₁ × β → α₂ × β :=
-  Prod.map f id
-
 def Mach.pop (mach : Mach) : Footprint.Outcome Mach B256 :=
   match mach.stack with
   | [] => .error ⟨"StackUnderflowError", mach⟩
   | x :: xs => .ok ⟨x, {mach with stack := xs}⟩
+
+def Devm.pop (devm : Devm) : Except (String × Devm) (B256 × Devm) :=
+  liftMach Mach.pop devm
+
+theorem Devm.pop_def (devm : Devm) : Devm.pop devm = (do
+    match devm.stack with
+    | [] => .error ⟨"StackUnderflowError", devm⟩
+    | x :: xs => .ok ⟨x, {devm with stack := xs}⟩) := by
+  cases devm with
+  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
+      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
+    cases stack <;> rfl
+
+def Prod.mapFst {α₁ : Type u₁} {α₂ : Type u₂} {β : Type v} (f : α₁ → α₂) : α₁ × β → α₂ × β :=
+  Prod.map f id
 
 def Mach.popToNat (mach : Mach) : Footprint.Outcome Mach Nat :=
   match mach.pop with
@@ -1481,12 +1488,12 @@ theorem Devm.popN_def (devm : Devm) (n : Nat) : devm.popN n =
           rcases err with ⟨msg, mach'⟩
           cases mach'
           simp only [Devm.popN, Mach.popN, Mach.pop, liftMach, Footprint.liftOutcome,
-            Devm.pop, Devm.mach, Devm.setMach, bind, Except.bind, h]
+            Devm.pop_def, Devm.mach, Devm.setMach, bind, Except.bind, h]
         | ok out =>
           rcases out with ⟨vals, mach'⟩
           cases mach'
           simp only [Devm.popN, Mach.popN, Mach.pop, liftMach, Footprint.liftOutcome,
-            Devm.pop, Devm.mach, Devm.setMach, bind, Except.bind, h]
+            Devm.pop_def, Devm.mach, Devm.setMach, bind, Except.bind, h]
 
 def Mach.pushItem (x : B256) (c : Nat) (mach : Mach) : Footprint.Outcome Mach Unit :=
   match Mach.chargeGas c mach with
@@ -1812,13 +1819,13 @@ theorem applyUnary_def (f : B256 → B256) (cost : Nat) (devm : Devm) :
         rcases err with ⟨msg, mach'⟩
         cases mach'
         simp only [applyUnary, Mach.applyUnary, Mach.pop, pushItem, liftMachExecution,
-          liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+          liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop_def, Devm.mach,
           Devm.setMach, bind, Except.bind, h]
       | ok out =>
         rcases out with ⟨_, mach'⟩
         cases mach'
         simp only [applyUnary, Mach.applyUnary, Mach.pop, pushItem, liftMachExecution,
-          liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+          liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop_def, Devm.mach,
           Devm.setMach, bind, Except.bind, h]
 
 theorem applyBinary_def (f : B256 → B256 → B256) (cost : Nat) (devm : Devm) :
@@ -1840,13 +1847,13 @@ theorem applyBinary_def (f : B256 → B256 → B256) (cost : Nat) (devm : Devm) 
           rcases err with ⟨msg, mach'⟩
           cases mach'
           simp only [applyBinary, Mach.applyBinary, Mach.pop, pushItem, liftMachExecution,
-            liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+            liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop_def, Devm.mach,
             Devm.setMach, bind, Except.bind, h]
         | ok out =>
           rcases out with ⟨_, mach'⟩
           cases mach'
           simp only [applyBinary, Mach.applyBinary, Mach.pop, pushItem, liftMachExecution,
-            liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+            liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop_def, Devm.mach,
             Devm.setMach, bind, Except.bind, h]
 
 theorem applyTernary_def (f : B256 → B256 → B256 → B256) (cost : Nat) (devm : Devm) :
@@ -1872,13 +1879,13 @@ theorem applyTernary_def (f : B256 → B256 → B256 → B256) (cost : Nat) (dev
             rcases err with ⟨msg, mach'⟩
             cases mach'
             simp only [applyTernary, Mach.applyTernary, Mach.pop, pushItem, liftMachExecution,
-              liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+              liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop_def, Devm.mach,
               Devm.setMach, bind, Except.bind, h]
           | ok out =>
             rcases out with ⟨_, mach'⟩
             cases mach'
             simp only [applyTernary, Mach.applyTernary, Mach.pop, pushItem, liftMachExecution,
-              liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop, Devm.mach,
+              liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop_def, Devm.mach,
               Devm.setMach, bind, Except.bind, h]
 
 def List.swap {ξ} : List ξ → Nat → Option (List ξ)
