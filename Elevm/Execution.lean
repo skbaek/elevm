@@ -1745,60 +1745,6 @@ theorem Devm.addLog_def (devm : Devm) (log : Log) :
 theorem Devm.addLog_logs (devm : Devm) (log : Log) :
     (devm.addLog log).logs = devm.logs ++ [log] := rfl
 
-namespace Footprint.Calibration
-
-/-- Shadow of `Devm.memWrite` expressed as a pure Mach update. -/
-def memWriteCore (idx : Nat) (val : B8L) (mach : Mach) : Mach :=
-  {mach with memory := mach.memory.write idx val}
-
-/-- Shadow of `Devm.pop` retaining its Mach state on both outcomes. -/
-def popCore (mach : Mach) : Footprint.Outcome Mach B256 :=
-  match mach.stack with
-  | [] => .error ("StackUnderflowError", mach)
-  | x :: xs => .ok (x, {mach with stack := xs})
-
-/-- Shadow of `chargeGas` retaining its Mach state on both outcomes. -/
-def chargeGasCore (cost : Nat) (mach : Mach) : Footprint.Outcome Mach Unit :=
-  Mach.chargeGas cost mach
-
-/-- Minimal read-only-World core: read a balance and push it onto the Mach
-    stack while leaving Meta unchanged. -/
-def pushBalanceCore (a : Adr) (world : World) (mach : Mach) (view : Meta) :
-    Footprint.Outcome (Mach × Meta) Unit :=
-  .ok ((), ({mach with stack := (world.state.get a).bal :: mach.stack}, view))
-
-def memWriteShadow (devm : Devm) (idx : Nat) (val : B8L) : Devm :=
-  liftMachPure (memWriteCore idx val) devm
-
-def popShadow (devm : Devm) : Except (String × Devm) (B256 × Devm) :=
-  liftMach popCore devm
-
-def chargeGasShadow (cost : Nat) (devm : Devm) : Execution :=
-  liftMachExecution (chargeGasCore cost) devm
-
-def pushBalanceShadow (devm : Devm) (a : Adr) : Execution :=
-  liftMachMetaWorldExecution (pushBalanceCore a) devm
-
-theorem lift_memWriteCore (devm : Devm) (idx : Nat) (val : B8L) :
-    memWriteShadow devm idx val = devm.memWrite idx val := rfl
-
-theorem lift_popCore (devm : Devm) :
-    popShadow devm = devm.pop := by
-  cases devm with
-  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
-      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
-    cases stack <;> rfl
-
-theorem lift_chargeGasCore (cost : Nat) (devm : Devm) :
-    chargeGasShadow cost devm = chargeGas cost devm := by
-  cases devm with
-  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
-      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
-    unfold chargeGasShadow liftMachExecution liftMach Footprint.toExecution
-      Footprint.liftOutcome chargeGasCore chargeGas Devm.mach Devm.setMach
-    cases safeSub gasLeft cost <;> rfl
-
-end Footprint.Calibration
 
 def Mach.applyUnary (f : B256 → B256) (cost : Nat) (mach : Mach) :
     Footprint.Outcome Mach Unit :=
