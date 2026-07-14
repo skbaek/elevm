@@ -954,9 +954,6 @@ def Devm.setMeta (devm : Devm) (view : Meta) : Devm :=
 @[simp] theorem Devm.world_setMeta (devm : Devm) (view : Meta) :
     (devm.setMeta view).world = devm.world := rfl
 
-theorem Devm.setMach_setMeta (devm : Devm) (mach : Mach) (view : Meta) :
-    (devm.setMach mach).setMeta view = (devm.setMeta view).setMach mach := rfl
-
 structure Sevm : Type where
   caller : Adr
   target : Option Adr
@@ -1713,9 +1710,6 @@ def Mach.memWrite (mach : Mach) (idx : Nat) (val : B8L) : Mach :=
 def Devm.memWrite (devm : Devm) (idx : Nat) (val : B8L) : Devm :=
   liftMachPure (Mach.memWrite · idx val) devm
 
-theorem Devm.memWrite_def (devm : Devm) (idx : Nat) (val : B8L) :
-    devm.memWrite idx val = (devm.withMemory <| devm.memory.write idx val) := rfl
-
 def Devm.memRead (devm : Devm) (index size : Nat) : B8L × Devm :=
   let ⟨val, mem⟩ := devm.memory.read index size
   ⟨val, devm.withMemory mem⟩
@@ -1738,9 +1732,6 @@ def Devm.addLog (devm : Devm) (log : Log) : Devm :=
 theorem Devm.addLog_compat (devm : Devm) (log : Log) :
     liftMachMetaPure (fun mach view => (mach, view.addLog log)) devm =
       devm.withLogs (devm.logs ++ [log]) := rfl
-
-theorem Devm.addLog_def (devm : Devm) (log : Log) :
-    devm.addLog log = devm.withLogs (devm.logs ++ [log]) := rfl
 
 theorem Devm.addLog_logs (devm : Devm) (log : Log) :
     (devm.addLog log).logs = devm.logs ++ [log] := rfl
@@ -1836,38 +1827,6 @@ theorem applyBinary_def (f : B256 → B256 → B256) (cost : Nat) (devm : Devm) 
             liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop_def, Devm.mach,
             Devm.setMach, bind, Except.bind, h]
 
-theorem applyTernary_def (f : B256 → B256 → B256 → B256) (cost : Nat) (devm : Devm) :
-    applyTernary f cost devm = (do
-      let ⟨x, devm'⟩ ← devm.pop
-      let ⟨y, devm''⟩ ← devm'.pop
-      let ⟨z, devm'''⟩ ← devm''.pop
-      pushItem (f x y z) cost devm''') := by
-  cases devm with
-  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
-      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
-    cases stack with
-    | nil => rfl
-    | cons x xs =>
-      cases xs with
-      | nil => rfl
-      | cons y ys =>
-        cases ys with
-        | nil => rfl
-        | cons z zs =>
-          cases h : Mach.pushItem (f x y z) cost { stack := zs, memory := memory, gasLeft := gasLeft } with
-          | error err =>
-            rcases err with ⟨msg, mach'⟩
-            cases mach'
-            simp only [applyTernary, Mach.applyTernary, Mach.pop, pushItem, liftMachExecution,
-              liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop_def, Devm.mach,
-              Devm.setMach, bind, Except.bind, h]
-          | ok out =>
-            rcases out with ⟨_, mach'⟩
-            cases mach'
-            simp only [applyTernary, Mach.applyTernary, Mach.pop, pushItem, liftMachExecution,
-              liftMach, Footprint.toExecution, Footprint.liftOutcome, Devm.pop_def, Devm.mach,
-              Devm.setMach, bind, Except.bind, h]
-
 def List.swap {ξ} : List ξ → Nat → Option (List ξ)
   | [], _ => none
   | x :: xs, k => do
@@ -1921,39 +1880,6 @@ def Rinst.balanceCore (world : World) (mach : Mach) (view : Meta) :
       match Mach.push (world.state.get a).bal mach'' with
       | .error (err, mach''') => .error (err, (mach''', view'))
       | .ok (_, mach''') => .ok ((), (mach''', view'))
-
-/-- Compatibility seam exposing the former `BALANCE` match-arm shape. -/
-theorem Rinst.balanceCore_compat (devm : Devm) :
-    liftMachMetaWorldExecution Rinst.balanceCore devm = (do
-      let ⟨x, devm⟩ ← devm.pop
-      let a := x.toAdr
-      let devm' ←
-        if a ∈ devm.accessedAddresses
-        then chargeGas gasWarmAccess devm
-        else chargeGas gasColdAccountAccess (addAccessedAddress devm a)
-      devm'.push (devm'.getBal a)) := by
-  cases devm with
-  | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
-      error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
-    cases stack with
-    | nil => rfl
-    | cons x xs =>
-      simp only [liftMachMetaWorldExecution, liftMachMetaExecution, liftMachMeta,
-        Footprint.toExecution, Footprint.liftOutcome, Rinst.balanceCore,
-        Mach.pop, Mach.chargeGas, Mach.push, Devm.pop, Devm.push, chargeGas,
-        addAccessedAddress, liftMach, liftMachExecution, liftMachMetaPure,
-        Devm.mach, Devm.meta, Devm.world, Devm.setMach, Devm.setMeta,
-        Devm.setMachMeta, Meta.addAccessedAddress, Devm.getBal, Devm.getAcct,
-        bind, Except.bind]
-      by_cases h : x.toAdr ∈ accessedAddresses
-      · cases hgas : safeSub gasLeft gasWarmAccess with
-        | none => simp [h, hgas]
-        | some gas =>
-          by_cases hs : xs.length < 1024 <;> simp [h, hgas, hs]
-      · cases hgas : safeSub gasLeft gasColdAccountAccess with
-        | none => simp [h, hgas]
-        | some gas =>
-          by_cases hs : xs.length < 1024 <;> simp [h, hgas, hs]
 
 def Rinst.runCore
   (pc : Nat)
@@ -2228,20 +2154,6 @@ def Rinst.runCore
           (sevm.benvStat.blockHashes.length - (sevm.benvStat.number - blockNumber))
           0
     devm.push hash
-
-/-- Stable branch-definition lemma for proofs that need the pre-partition
-    `BALANCE` match-arm shape. -/
-theorem Rinst.runCore_balance_def (pc : Nat) (devm : Devm) (sevm : Sevm) :
-    Rinst.runCore pc devm sevm .balance = (do
-      let ⟨x, devm⟩ ← devm.pop
-      let a := x.toAdr
-      let devm' ←
-        if a ∈ devm.accessedAddresses
-        then chargeGas gasWarmAccess devm
-        else chargeGas gasColdAccountAccess (addAccessedAddress devm a)
-      devm'.push (devm'.getBal a)) := by
-  rw [Rinst.runCore]
-  exact Rinst.balanceCore_compat devm
 
 def Rinst.run (evm : Evm) := Rinst.runCore evm.pc evm.dyna evm.sta
 
