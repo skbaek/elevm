@@ -1521,10 +1521,6 @@ def Meta.addAccessedAddress (view : Meta) (a : Adr) : Meta :=
 def addAccessedAddress (devm : Devm) (a : Adr) : Devm :=
   liftMachMetaPure (fun mach view => (mach, view.addAccessedAddress a)) devm
 
-theorem addAccessedAddress_compat (devm : Devm) (a : Adr) :
-    liftMachMetaPure (fun mach view => (mach, view.addAccessedAddress a)) devm =
-      devm.withAccessedAddresses (devm.accessedAddresses.insert a) := rfl
-
 theorem addAccessedAddress_def (devm : Devm) (a : Adr) :
     addAccessedAddress devm a =
       devm.withAccessedAddresses (devm.accessedAddresses.insert a) := rfl
@@ -1538,10 +1534,6 @@ def Meta.addAccessedStorageKey (view : Meta) (a : Adr) (k : B256) : Meta :=
 
 def addAccessedStorageKey (devm : Devm) (a : Adr) (k : B256) : Devm :=
   liftMachMetaPure (fun mach view => (mach, view.addAccessedStorageKey a k)) devm
-
-theorem addAccessedStorageKey_compat (devm : Devm) (a : Adr) (k : B256) :
-    liftMachMetaPure (fun mach view => (mach, view.addAccessedStorageKey a k)) devm =
-      devm.withAccessedStorageKeys (devm.accessedStorageKeys.insert ⟨a, k⟩) := rfl
 
 theorem addAccessedStorageKey_def (devm : Devm) (a : Adr) (k : B256) :
     addAccessedStorageKey devm a k =
@@ -1729,13 +1721,8 @@ def Meta.addLog (view : Meta) (log : Log) : Meta :=
 def Devm.addLog (devm : Devm) (log : Log) : Devm :=
   liftMachMetaPure (fun mach view => (mach, view.addLog log)) devm
 
-theorem Devm.addLog_compat (devm : Devm) (log : Log) :
-    liftMachMetaPure (fun mach view => (mach, view.addLog log)) devm =
-      devm.withLogs (devm.logs ++ [log]) := rfl
-
 theorem Devm.addLog_logs (devm : Devm) (log : Log) :
     (devm.addLog log).logs = devm.logs ++ [log] := rfl
-
 
 def Mach.applyUnary (f : B256 → B256) (cost : Nat) (mach : Mach) :
     Footprint.Outcome Mach Unit :=
