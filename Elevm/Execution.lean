@@ -924,6 +924,11 @@ def Devm.setMeta (devm : Devm) (view : Meta) : Devm :=
     accessedStorageKeys := view.accessedStorageKeys
     createdAccounts := view.createdAccounts }
 
+def Devm.setWorld (devm : Devm) (world : World) : Devm :=
+  { devm with
+    state := world.state
+    transientStorage := world.transientStorage }
+
 @[simp] theorem Devm.mach_setMach (devm : Devm) (mach : Mach) :
     (devm.setMach mach).mach = mach := rfl
 
@@ -976,18 +981,47 @@ structure Evm : Type where
   sta : Sevm
   dyna : Devm
 
-def Devm.withStack (devm : Devm) (stack : List B256) : Devm := {devm with stack := stack}
-def Devm.withMemory (devm : Devm) (memory : Mem) : Devm := {devm with memory := memory}
-def Devm.withGasLeft (devm : Devm) (gasLeft : Nat) : Devm := {devm with gasLeft := gasLeft}
-def Devm.withLogs (devm : Devm) (logs : List Log) : Devm := {devm with logs := logs}
-def Devm.withRefundCounter (devm : Devm) (refundCounter : Int) : Devm := {devm with refundCounter := refundCounter}
-def Devm.withOutput (devm : Devm) (output : B8L) : Devm := {devm with output := output}
-def Devm.withAccountsToDelete (devm : Devm) (accountsToDelete : AdrSet) : Devm := {devm with accountsToDelete := accountsToDelete}
-def Devm.withReturnData (devm : Devm) (returnData : B8L) : Devm := {devm with returnData := returnData}
-def Devm.withError (devm : Devm) (error : Option String) : Devm := {devm with error := error}
-def Devm.withAccessedAddresses (devm : Devm) (accessedAddresses : AdrSet) : Devm := {devm with accessedAddresses := accessedAddresses}
-def Devm.withAccessedStorageKeys (devm : Devm) (accessedStorageKeys : KeySet) : Devm := {devm with accessedStorageKeys := accessedStorageKeys}
-def Devm.withState (devm : Devm) (state : State) : Devm := {devm with state := state}
+def Devm.withStack (devm : Devm) (stack : List B256) : Devm :=
+  devm.setMach {devm.mach with stack := stack}
+
+def Devm.withMemory (devm : Devm) (memory : Mem) : Devm :=
+  devm.setMach {devm.mach with memory := memory}
+
+def Devm.withGasLeft (devm : Devm) (gasLeft : Nat) : Devm :=
+  devm.setMach {devm.mach with gasLeft := gasLeft}
+
+def Devm.withLogs (devm : Devm) (logs : List Log) : Devm :=
+  devm.setMeta {devm.meta with logs := logs}
+
+def Devm.withRefundCounter (devm : Devm) (refundCounter : Int) : Devm :=
+  devm.setMeta {devm.meta with refundCounter := refundCounter}
+
+def Devm.withOutput (devm : Devm) (output : B8L) : Devm :=
+  devm.setMeta {devm.meta with output := output}
+
+def Devm.withAccountsToDelete (devm : Devm) (accountsToDelete : AdrSet) : Devm :=
+  devm.setMeta {devm.meta with accountsToDelete := accountsToDelete}
+
+def Devm.withReturnData (devm : Devm) (returnData : B8L) : Devm :=
+  devm.setMeta {devm.meta with returnData := returnData}
+
+def Devm.withError (devm : Devm) (error : Option String) : Devm :=
+  devm.setMeta {devm.meta with error := error}
+
+def Devm.withAccessedAddresses (devm : Devm) (accessedAddresses : AdrSet) : Devm :=
+  devm.setMeta {devm.meta with accessedAddresses := accessedAddresses}
+
+def Devm.withAccessedStorageKeys (devm : Devm) (accessedStorageKeys : KeySet) : Devm :=
+  devm.setMeta {devm.meta with accessedStorageKeys := accessedStorageKeys}
+
+def Devm.withCreatedAccounts (devm : Devm) (createdAccounts : AdrSet) : Devm :=
+  devm.setMeta {devm.meta with createdAccounts := createdAccounts}
+
+def Devm.withState (devm : Devm) (state : State) : Devm :=
+  devm.setWorld {devm.world with state := state}
+
+def Devm.withTransientStorage (devm : Devm) (transientStorage : Tra) : Devm :=
+  devm.setWorld {devm.world with transientStorage := transientStorage}
 
 def Stack.toStrings (stack : List B256) : List String :=
   fork "STACK" [
@@ -1056,23 +1090,25 @@ def Benv.toStrings (benv : Benv) : List String :=
   ]
 
 def Evm.toStrings (evm : Evm) : List String :=
+  let mach := evm.dyna.mach
+  let metaView := evm.dyna.meta
   fork "EVM" [
     [s!"PC : {evm.pc}"],
-    Stack.toStrings evm.dyna.stack,
-    Mem.toStrings evm.dyna.memory,
+    Stack.toStrings mach.stack,
+    Mem.toStrings mach.memory,
     [s!"CODE : {B8L.toHex evm.sta.code.toList}"],
-    [s!"GAS LEFT : {evm.dyna.gasLeft}"],
-    fork "LOGS" (evm.dyna.logs.map Log.toStrings),
-    [s!"REFUND COUNTER : {evm.dyna.refundCounter}"],
+    [s!"GAS LEFT : {mach.gasLeft}"],
+    fork "LOGS" (metaView.logs.map Log.toStrings),
+    [s!"REFUND COUNTER : {metaView.refundCounter}"],
     ["MSG : *print unimplemented*"], --Msg.toStrings evm.msg,
-    [s!"output : {evm.dyna.output.toHex}"],
+    [s!"output : {metaView.output.toHex}"],
     fork "ACCOUNTS TO DELETE"
-      (evm.dyna.accountsToDelete.toList.map (mkSingleton ∘ Adr.toHex)),
-    [s!"return data : {evm.dyna.returnData.toHex}"],
+      (metaView.accountsToDelete.toList.map (mkSingleton ∘ Adr.toHex)),
+    [s!"return data : {metaView.returnData.toHex}"],
     fork "ACCESSED ADDRESSES"
-      (evm.dyna.accessedAddresses.toList.map (mkSingleton ∘ Adr.toHex)),
+      (metaView.accessedAddresses.toList.map (mkSingleton ∘ Adr.toHex)),
     fork "ACCESSED STORAGE KEYS"
-      (evm.dyna.accessedStorageKeys.toList.map (fun kv => [s!"{kv.fst.toHex} : {B256.toHex kv.snd}"]))
+      (metaView.accessedStorageKeys.toList.map (fun kv => [s!"{kv.fst.toHex} : {B256.toHex kv.snd}"]))
   ]
 
 abbrev Adr.isPrecomp (a : Adr) : Prop :=
@@ -1230,7 +1266,7 @@ theorem chargeGas_def (cost : Nat) (devm : Devm) :
     chargeGas cost devm = (do
       match safeSub devm.gasLeft cost with
       | none => .error ⟨"OutOfGasError", devm⟩
-      | some gas => .ok {devm with gasLeft := gas}) := by
+      | some gas => .ok (devm.setMach {devm.mach with gasLeft := gas})) := by
   cases devm with
   | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
       error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
@@ -1392,7 +1428,7 @@ theorem Devm.push_def (x : B256) (devm : Devm) : Devm.push x devm = (do
     .assert
       (devm.stack.length < 1024)
       ⟨"StackOverflowError", devm⟩
-    .ok {devm with stack := x :: devm.stack}) := by
+    .ok (devm.setMach {devm.mach with stack := x :: devm.stack})) := by
   cases devm with
   | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
       error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
@@ -1411,7 +1447,7 @@ def Devm.pop (devm : Devm) : Except (String × Devm) (B256 × Devm) :=
 theorem Devm.pop_def (devm : Devm) : Devm.pop devm = (do
     match devm.stack with
     | [] => .error ⟨"StackUnderflowError", devm⟩
-    | x :: xs => .ok ⟨x, {devm with stack := xs}⟩) := by
+    | x :: xs => .ok ⟨x, devm.setMach {devm.mach with stack := xs}⟩) := by
   cases devm with
   | mk stack memory gasLeft logs refundCounter output accountsToDelete returnData
       error accessedAddresses accessedStorageKeys state createdAccounts transientStorage =>
@@ -1622,7 +1658,7 @@ def Benv.setStorVal (benv : Benv) (adr : Adr) (key val : B256) : Benv :=
 
 def Devm.setStorVal (devm : Devm) (adr : Adr) (key val : B256) : Devm :=
   --devm.withBenv (devm.benv.setStorVal adr key val)
-  {devm with state := devm.state.setStorVal adr key val}
+  devm.withState (devm.state.setStorVal adr key val)
 
 def Tra.setStorVal (tra : Tra) (adr : Adr) (key val : B256) : Tra :=
   let stor : Stor := tra.getD adr .empty
@@ -1632,7 +1668,7 @@ def Tenv.setTransVal (tenv : Tenv) (adr : Adr) (key val : B256) : Tenv :=
   {tenv with transientStorage := tenv.transientStorage.setStorVal adr key val}
 
 def Devm.setTransVal (devm : Devm) (adr : Adr) (key val : B256) : Devm :=
-  {devm with transientStorage := devm.transientStorage.setStorVal adr key val}
+  devm.withTransientStorage (devm.transientStorage.setStorVal adr key val)
 
 def getOrigStorVal (sevm : Sevm) (adr : Adr) (key : B256) : B256 :=
   (getOrigAcct sevm adr).stor.get key
@@ -1911,7 +1947,7 @@ def Rinst.runCore
     let extend_memory_cost := devm.extCost [⟨memory_start_index, size⟩]
     let devm ← chargeGas (gVerylow + copy_gas_cost + extend_memory_cost) devm
     let value := sevm.code.sliceD code_start_index size (Linst.toB8 .stop)
-    .ok {devm with memory := devm.memory.write memory_start_index value}
+    .ok (devm.memWrite memory_start_index value)
   | .gasprice => pushItem sevm.tenvStat.gasPrice.toB256 gBase devm
   | .extcodesize => do
     let ⟨adr, devm⟩ ← devm.popToAdr
@@ -1938,10 +1974,7 @@ def Rinst.runCore
           (addAccessedAddress devm adr)
     let code := devm.getCode adr
     let value := code.sliceD code_start_index size (Linst.toB8 .stop)
-    .ok {
-      devm with
-      memory := devm.memory.write memory_start_index value
-    }
+    .ok (devm.memWrite memory_start_index value)
   | .retdatasize => pushItem devm.returnData.length.toB256 gBase devm
   | .retdatacopy => do
     let ⟨memory_start_index, devm⟩ ← devm.popToNat
@@ -1955,10 +1988,7 @@ def Rinst.runCore
       .error ⟨"OutOfBoundsRead", devm⟩
     let value :=
       devm.returnData.sliceD return_data_start_index size 0
-    .ok {
-      devm with
-      memory := devm.memory.write memory_start_index value
-    }
+    .ok (devm.memWrite memory_start_index value)
   | .extcodehash => do
     let ⟨adr, devm⟩ ← devm.popToAdr
     let devm ←
@@ -2044,7 +2074,7 @@ def Rinst.runCore
     let devm ← chargeGas gVerylow devm
     match List.swap devm.stack n with
     | none => .error ⟨"StackUnderflowError", devm⟩
-    | some stack => .ok {devm with stack := stack}
+    | some stack => .ok (devm.withStack stack)
   | .dup n => do
     let devm ← chargeGas gVerylow devm
     match devm.stack[n]? with
@@ -2087,14 +2117,12 @@ def Rinst.runCore
           gasCost2 + (gasStorageUpdate - gasColdSload)
       else
         gasCost2 + gasWarmAccess
-    let devm4 ← .ok <|
-      { devm3 with
-        refundCounter :=
-          sstore_new_refund_counter
-            new_value
-            original_value
-            current_value
-            devm3.refundCounter }
+    let devm4 ← .ok <| devm3.withRefundCounter <|
+      sstore_new_refund_counter
+        new_value
+        original_value
+        current_value
+        devm3.refundCounter
     let devm5 ← chargeGas gasCost3 devm4
     assertDynamic sevm devm5
     .ok (devm5.setStorVal sevm.currentTarget key new_value)
@@ -2341,7 +2369,7 @@ def Benv.addBal (benv : Benv) (adr : Adr) (val : B256) : Benv :=
 
 def Devm.setBal (devm : Devm) (adr : Adr) (val : B256) : Devm :=
   --{devm with benv := devm.benv.setBal adr val}
-  {devm with state := devm.state.setBal adr val}
+  devm.withState (devm.state.setBal adr val)
 
 -- def Msg.subBal (msg : Msg) (adr : Adr) (val : B256) : Option Msg := do
 --   let benv ← msg.benv.subBal adr val
@@ -2369,7 +2397,7 @@ def Linst.run (sevm : Sevm) (devm : Devm) :
     let extend_memory_cost := devm.extCost [⟨memory_start_index, size⟩]
     let devm ← chargeGas extend_memory_cost devm
     let ⟨output, devm⟩ := devm.memRead memory_start_index size
-    let devm := {devm with output := output}
+    let devm := devm.withOutput output
     .error ⟨"Revert", devm⟩
   | .ret => do
     let ⟨index, devm⟩ ← devm.popToNat
@@ -2377,7 +2405,7 @@ def Linst.run (sevm : Sevm) (devm : Devm) :
     let cost := devm.extCost [⟨index, size⟩]
     let devm ← chargeGas cost devm
     let ⟨output, devm⟩ := devm.memRead index size
-    .ok {devm with output := output}
+    .ok (devm.withOutput output)
   | .dest => do
     let donor := sevm.currentTarget
     let ⟨donee, devm1⟩ ← devm.popToAdr
@@ -2418,29 +2446,33 @@ def calculateMsgCallGas
     ⟨gas' + extra_gas, gas' + call_stipend⟩
 
 def incorporateChildOnError (parent child : Devm) (returnData : B8L) : Devm :=
-  {
-    parent with
-    gasLeft := parent.gasLeft + child.gasLeft
-    state := child.state
-    createdAccounts := child.createdAccounts
-    transientStorage := child.transientStorage
-    returnData := returnData
-  }
+  let parent := parent.setMach
+    {parent.mach with gasLeft := parent.gasLeft + child.gasLeft}
+  let parent := parent.setMeta
+    {parent.meta with
+      createdAccounts := child.createdAccounts
+      returnData := returnData}
+  parent.setWorld
+    {parent.world with
+      state := child.state
+      transientStorage := child.transientStorage}
 
 def incorporateChildOnSuccess (parent child : Devm) (returnData : B8L) : Devm :=
-  {
-    parent with
-    gasLeft := parent.gasLeft + child.gasLeft
-    state := child.state
-    createdAccounts := child.createdAccounts
-    transientStorage := child.transientStorage
-    logs := parent.logs ++ child.logs
-    refundCounter := parent.refundCounter + child.refundCounter
-    accountsToDelete := parent.accountsToDelete.union child.accountsToDelete
-    returnData := returnData
-    accessedAddresses := parent.accessedAddresses.union child.accessedAddresses
-    accessedStorageKeys := parent.accessedStorageKeys.union child.accessedStorageKeys
-  }
+  let parent := parent.setMach
+    {parent.mach with gasLeft := parent.gasLeft + child.gasLeft}
+  let parent := parent.setMeta
+    {parent.meta with
+      createdAccounts := child.createdAccounts
+      logs := parent.logs ++ child.logs
+      refundCounter := parent.refundCounter + child.refundCounter
+      accountsToDelete := parent.accountsToDelete.union child.accountsToDelete
+      returnData := returnData
+      accessedAddresses := parent.accessedAddresses.union child.accessedAddresses
+      accessedStorageKeys := parent.accessedStorageKeys.union child.accessedStorageKeys}
+  parent.setWorld
+    {parent.world with
+      state := child.state
+      transientStorage := child.transientStorage}
 
 def compute_contract_address (sender : Adr) (nonce : B64) : Adr :=
   let LA : B8L :=
@@ -2468,7 +2500,7 @@ def Msg.incrNonce (msg : Msg) (adr : Adr) : Msg :=
   }
 
 def Devm.incrNonce (devm : Devm) (adr : Adr) : Devm :=
-  {devm with state := devm.state.incrNonce adr}
+  devm.withState (devm.state.incrNonce adr)
 
 def Benv.incrNonce (benv : Benv) (adr : Adr) : Benv :=
   {benv with state := benv.state.incrNonce adr}
@@ -2491,25 +2523,17 @@ def Msg.setCode (msg : Msg) (adr : Adr) (code : ByteArray) : Msg :=
 
 def Devm.setCode (devm : Devm) (adr : Adr) (code : ByteArray) : Devm :=
   --{devm with benv := {devm.benv with state := devm.benv.state.setCode adr code}}
-  {devm with state := devm.state.setCode adr code}
+  devm.withState (devm.state.setCode adr code)
 
 def Devm.rollback (devm : Devm) (wor : State) (tra : Tra) : Devm :=
-  {
-    devm with
-    state := wor,
-    transientStorage := tra
-  }
+  devm.setWorld {devm.world with state := wor, transientStorage := tra}
 
 def liftToExecution (devm : Devm)
   (f : Except (String × State × AdrSet × Tra) Devm) : Execution := do
   match f with
   | .error ⟨err, state, createdAccounts, tra⟩ =>
-    let devm' := {
-      devm with
-      state := state
-      createdAccounts := createdAccounts
-      transientStorage := tra
-    }
+    let devm' := (devm.withCreatedAccounts createdAccounts).setWorld
+      {devm.world with state := state, transientStorage := tra}
     .error ⟨err, devm'⟩
   | .ok devm' => .ok devm'
 
@@ -3003,8 +3027,9 @@ def precompileRun (evm : Evm) : Adr → PrecompResult
 
 def applyPrecompResult (evm : Evm) (res : PrecompResult) : Execution :=
   match res with
-  | .error msg cost => .error ⟨msg, { evm.dyna with gasLeft := evm.dyna.gasLeft - cost }⟩
-  | .ok cost output => .ok { evm.dyna with gasLeft := evm.dyna.gasLeft - cost, output := output }
+  | .error msg cost => .error ⟨msg, evm.dyna.withGasLeft (evm.dyna.gasLeft - cost)⟩
+  | .ok cost output =>
+    .ok <| (evm.dyna.withGasLeft (evm.dyna.gasLeft - cost)).withOutput output
 
 def executePrecomp (evm : Evm) (adr : Adr) : Execution :=
   applyPrecompResult evm (precompileRun evm adr)
@@ -3101,7 +3126,8 @@ def processCreateMessage.chargeCodeGas (devm : Devm) : Execution :=
 
 def processCreateMessage.exceptionalHalt
     (devm : Devm) (err : String) (st : State) (tra : Tra) : Devm :=
-  {devm.rollback st tra with gasLeft := 0, output := [], error := .some err}
+  let devm := (devm.rollback st tra).withGasLeft 0
+  devm.setMeta {devm.meta with output := [], error := .some err}
 
 def initSevm (msg : Msg) : Sevm :=
   {
@@ -3161,10 +3187,12 @@ def executeCode.handleError :
   | .ok evm => .ok evm
   | .error ⟨err, evm⟩ =>
     if isExceptionalHalt err
-    then .ok {evm with gasLeft := 0, output := [], error := some err}
+    then
+      let evm := evm.withGasLeft 0
+      .ok (evm.setMeta {evm.meta with output := [], error := some err})
     else
       if err = "Revert"
-      then .ok {evm with error := some "Revert"}
+      then .ok (evm.withError (some "Revert"))
       else .error ⟨err, evm.state, evm.createdAccounts, evm.transientStorage⟩
 
 def Execution.withPc (pc : Nat) (exn : Execution) :
@@ -3296,14 +3324,14 @@ mutual
         ⟨"OutOfGasError", devm⟩
       let devm1 ← Fueled.ok <| addAccessedAddress devm newAddress
       let createMsgGas ← Fueled.ok <| except64th devm1.gasLeft
-      let devm2 ← Fueled.ok <| {devm1 with gasLeft := devm1.gasLeft - createMsgGas}
+      let devm2 ← Fueled.ok <| devm1.withGasLeft (devm1.gasLeft - createMsgGas)
       assertDynamic sevm devm2
-      let devm3 ← Fueled.ok <| {devm2 with returnData := []}
+      let devm3 ← Fueled.ok <| devm2.withReturnData []
       let sender ← Fueled.ok <| devm3.state.get sevm.currentTarget
       if ( sender.bal < endowment ∨
            sender.nonce = B64.max ∨
            sevm.depth = 0 ) then
-        return (← {devm3 with gasLeft := devm3.gasLeft + createMsgGas}.push 0)
+        return (← (devm3.withGasLeft (devm3.gasLeft + createMsgGas)).push 0)
       let devm4 ← Fueled.ok <| devm3.incrNonce sevm.currentTarget
       if
         ( let target := devm4.state.get newAddress
@@ -3509,11 +3537,8 @@ mutual
       if senderBal < value
       then
         let devm12 ← devm11.push 0
-        Fueled.ok {
-          devm12 with
-          returnData := []
-          gasLeft := devm12.gasLeft + msgCallStipend
-        }
+        Fueled.ok <|
+          (devm12.withGasLeft (devm12.gasLeft + msgCallStipend)).withReturnData []
       else
         genericCall
           sevm
