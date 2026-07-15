@@ -899,36 +899,6 @@ def Devm.setMeta (devm : Devm) (view : Meta) : Devm :=
 def Devm.setWorld (devm : Devm) (world : World) : Devm :=
   { devm with world := world }
 
-@[simp] theorem Devm.mach_setMach (devm : Devm) (mach : Mach) :
-    (devm.setMach mach).mach = mach := rfl
-
-@[simp] theorem Devm.meta_setMeta (devm : Devm) (view : Meta) :
-    (devm.setMeta view).meta = view := rfl
-
-@[simp] theorem Devm.setMach_mach (devm : Devm) :
-    devm.setMach devm.mach = devm := rfl
-
-@[simp] theorem Devm.setMeta_meta (devm : Devm) :
-    devm.setMeta devm.meta = devm := rfl
-
-@[simp] theorem Devm.setMach_setMach (devm : Devm) (mach mach' : Mach) :
-    (devm.setMach mach).setMach mach' = devm.setMach mach' := rfl
-
-@[simp] theorem Devm.setMeta_setMeta (devm : Devm) (view view' : Meta) :
-    (devm.setMeta view).setMeta view' = devm.setMeta view' := rfl
-
-@[simp] theorem Devm.meta_setMach (devm : Devm) (mach : Mach) :
-    (devm.setMach mach).meta = devm.meta := rfl
-
-@[simp] theorem Devm.world_setMach (devm : Devm) (mach : Mach) :
-    (devm.setMach mach).world = devm.world := rfl
-
-@[simp] theorem Devm.mach_setMeta (devm : Devm) (view : Meta) :
-    (devm.setMeta view).mach = devm.mach := rfl
-
-@[simp] theorem Devm.world_setMeta (devm : Devm) (view : Meta) :
-    (devm.setMeta view).world = devm.world := rfl
-
 structure Sevm : Type where
   caller : Adr
   target : Option Adr
@@ -1127,39 +1097,25 @@ def liftMachExecution (core : Mach → Footprint.Outcome Mach Unit)
     (devm : Devm) : Execution :=
   Footprint.toExecution (liftMach core devm)
 
-/-- Reattach a paired Mach+Meta mutable output to a flat `Devm`. -/
-def Devm.setMachMeta (devm : Devm) (view : Mach × Meta) : Devm :=
-  (devm.setMach view.1).setMeta view.2
-
 /-- Lift a Mach+Meta payload core.  The mutable output contains no `World`. -/
 def liftMachMeta
     (core : Mach → Meta → Footprint.Outcome (Mach × Meta) α)
     (devm : Devm) : Except (String × Devm) (α × Devm) :=
   Footprint.liftOutcome
-    (fun d => (d.mach, d.meta)) Devm.setMachMeta
+    (fun d => (d.mach, d.meta))
+    (fun d view => { d with mach := view.1, «meta» := view.2 })
     (fun view => core view.1 view.2) devm
 
 /-- Lift a pure Mach+Meta update. -/
 def liftMachMetaPure (core : Mach → Meta → Mach × Meta) (devm : Devm) : Devm :=
-  devm.setMachMeta (core devm.mach devm.meta)
+  let view := core devm.mach devm.meta
+  { devm with mach := view.1, «meta» := view.2 }
 
 /-- Lift a normalized Mach+Meta core to `Execution`. -/
 def liftMachMetaExecution
     (core : Mach → Meta → Footprint.Outcome (Mach × Meta) Unit)
     (devm : Devm) : Execution :=
   Footprint.toExecution (liftMachMeta core devm)
-
-/-- Lift a Mach+Meta payload core with read-only access to `World`.
-    `World` is an input only and cannot occur in the mutable output. -/
-def liftMachMetaWorld
-    (core : World → Mach → Meta → Footprint.Outcome (Mach × Meta) α)
-    (devm : Devm) : Except (String × Devm) (α × Devm) :=
-  liftMachMeta (core devm.world) devm
-
-/-- Lift a pure Mach+Meta update with read-only access to `World`. -/
-def liftMachMetaWorldPure
-    (core : World → Mach → Meta → Mach × Meta) (devm : Devm) : Devm :=
-  liftMachMetaPure (core devm.world) devm
 
 /-- Lift a normalized Mach+Meta core with read-only `World` access to
     `Execution`. -/
@@ -1517,10 +1473,6 @@ theorem addAccessedAddress_def (devm : Devm) (a : Adr) :
     addAccessedAddress devm a =
       devm.withAccessedAddresses (devm.accessedAddresses.insert a) := rfl
 
-theorem addAccessedAddress_accessedAddresses (devm : Devm) (a : Adr) :
-    (addAccessedAddress devm a).accessedAddresses =
-      devm.accessedAddresses.insert a := rfl
-
 def Meta.addAccessedStorageKey (view : Meta) (a : Adr) (k : B256) : Meta :=
   {view with accessedStorageKeys := view.accessedStorageKeys.insert ⟨a, k⟩}
 
@@ -1530,11 +1482,6 @@ def addAccessedStorageKey (devm : Devm) (a : Adr) (k : B256) : Devm :=
 theorem addAccessedStorageKey_def (devm : Devm) (a : Adr) (k : B256) :
     addAccessedStorageKey devm a k =
       devm.withAccessedStorageKeys (devm.accessedStorageKeys.insert ⟨a, k⟩) := rfl
-
-theorem addAccessedStorageKey_accessedStorageKeys
-    (devm : Devm) (a : Adr) (k : B256) :
-    (addAccessedStorageKey devm a k).accessedStorageKeys =
-      devm.accessedStorageKeys.insert ⟨a, k⟩ := rfl
 
 def addAccountToDelete (devm : Devm) (a : Adr) : Devm :=
   devm.withAccountsToDelete (devm.accountsToDelete.insert a)
@@ -1712,9 +1659,6 @@ def Meta.addLog (view : Meta) (log : Log) : Meta :=
 
 def Devm.addLog (devm : Devm) (log : Log) : Devm :=
   liftMachMetaPure (fun mach view => (mach, view.addLog log)) devm
-
-theorem Devm.addLog_logs (devm : Devm) (log : Log) :
-    (devm.addLog log).logs = devm.logs ++ [log] := rfl
 
 def Mach.applyUnary (f : B256 → B256) (cost : Nat) (mach : Mach) :
     Footprint.Outcome Mach Unit :=
