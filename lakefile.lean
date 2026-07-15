@@ -11,5 +11,7 @@ require mathlib from git
 
 @[default_target]
 lean_lib «Elevm» where
+
+@[default_target]
 lean_exe «elevm» where
   root := `Main
