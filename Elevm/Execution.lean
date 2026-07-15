@@ -3196,7 +3196,7 @@ mutual
       | .none =>
         Fueled.mapResult executeCode.handleError <| exec evm lim
       | .some adr =>
-        if adr.isPrecomp then
+        if !msg.disablePrecompiles && adr.isPrecomp then
           Fueled.ofExcept <| executeCode.handleError <| executePrecomp evm adr
         else
           Fueled.mapResult executeCode.handleError <| exec evm lim
@@ -4067,7 +4067,7 @@ def setDelegationStep
       let authorityAccount : Acct :=
         msg.benv.state.get authority
       let authorityCode : ByteArray := authorityAccount.code
-      if ¬ (authorityCode.isEmpty ∧ isValidDelegation authorityCode) then
+      if ¬ (authorityCode.isEmpty ∨ isValidDelegation authorityCode) then
         .ok ⟨msg, refundCounter⟩
       else if authorityAccount.nonce != auth.nonce then
         .ok ⟨msg, refundCounter⟩
@@ -4154,7 +4154,7 @@ def processMessageCall.call (msg : Msg) :
         msgDelegation with
         disablePrecompiles := true,
         accessedAddresses := msgDelegation.accessedAddresses.insert dca,
-        code := msg.benv.state.getCode dca,
+        code := msgDelegation.benv.state.getCode dca,
         codeAddress := some dca
       }
   -- Public compatibility boundary: retain the legacy observable error.
@@ -4600,6 +4600,26 @@ def BLT.toAccessList : BLT → Option AccessList
   | .list rs => List.mapM toAccessItem rs
   | _ => none
 
+def BLT.toAuth : BLT → Option Auth
+  | .list [
+      .b8s chainId,
+      .b8s address,
+      .b8s nonce,
+      .b8s yParity,
+      .b8s r,
+      .b8s s
+    ] => do
+      let address ← address.toAdr?
+      pure {
+        chainId := chainId.toB64
+        address := address
+        nonce := nonce.toB64
+        yParity := yParity.toNat
+        r := r.toB256
+        s := s.toB256
+      }
+  | _ => none
+
 def B8L.toExStrTx : B8L → Except String Tx
   | [] => .error "error : cannot decode empty transaction BLT"
   | x :: xs =>
@@ -4692,6 +4712,38 @@ def B8L.toExStrTx : B8L → Except String Tx
             (← accessList.toAccessList.toExcept "cannot decode access list")
             maxBlobFee.toNat
             (← List.mapM (λ r => r.toB256.toExcept "cannot decode blob hash") blobHashes)
+      }
+    | 0x04, BLT.list [
+        .b8s chainId,
+        .b8s nonce,
+        .b8s maxPriorityFee,
+        .b8s maxFee,
+        .b8s gas,
+        .b8s receiver,
+        .b8s value,
+        .b8s data,
+        accessList,
+        .list auths,
+        .b8s yParity,
+        .b8s r,
+        .b8s s
+      ] => do .ok {
+        nonce := nonce.toB64,
+        gas := gas.toNat,
+        value := value.toNat,
+        data := data,
+        v := yParity.toNat,
+        r := (r.reverse.takeD 32 0).reverse,
+        s := (s.reverse.takeD 32 0).reverse,
+        type :=
+          .four
+            chainId.toB64
+            maxPriorityFee.toNat
+            maxFee.toNat
+            (← receiver.toAdr?.toExcept "DecodingError")
+            (← accessList.toAccessList.toExcept "cannot decode access list")
+            (← (List.mapM BLT.toAuth auths).toExcept
+              "cannot decode authorization list")
       }
     | x, _ => .error s!"ERROR : type-{x} txs do not exist, decoding failed"
 
