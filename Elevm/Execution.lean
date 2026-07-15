@@ -2578,7 +2578,7 @@ def executeEcadd (evm : Evm) : PrecompResult :=
     let y0 : Nat := B8L.toNat <| data.sliceD 32 32 (0 : B8)
     let x1 : Nat := B8L.toNat <| data.sliceD 64 32 (0 : B8)
     let y1 : Nat := B8L.toNat <| data.sliceD 96 32 (0 : B8)
-    if ¬ (x0 < altBn128Prime ∧ y0 < altBn128Prime ∧ x1 < altBn128Prime ∧ x1 < altBn128Prime) then
+    if ¬ (x0 < altBn128Prime ∧ y0 < altBn128Prime ∧ x1 < altBn128Prime ∧ y1 < altBn128Prime) then
       .error "OutOfGasError" 150
     else
       match BNP.mk? x0 y0 with
