@@ -4930,7 +4930,7 @@ def getLast256BlockHashes (chain : BlockChain) : List B256 :=
   | block :: blocks =>
     let hash : B256 := (Header.toBLT block.header).toB8L.keccak
     let hashes : List B256 :=
-      blocks.map <| fun x => x.header.parentHash
+      (block :: blocks).map <| fun x => x.header.parentHash
     (hash :: hashes).reverse
 
 def computeRequestsHash (requests : List B8L) : B256 :=
