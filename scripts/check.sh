@@ -34,7 +34,7 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 FIXTURES="${ELEVM_FIXTURES:-$HOME/execution-specs/tests/fixtures/ethereum_tests/BlockchainTests}"
-TIMEOUT="${ELEVM_TIMEOUT:-300}"
+TIMEOUT="${ELEVM_TIMEOUT:-100}"
 BIN="$ROOT/.lake/build/bin/elevm"
 
 usage() {

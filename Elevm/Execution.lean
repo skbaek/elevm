@@ -2,6 +2,16 @@ import Elevm.Types
 import Elevm.EC
 import Elevm.Hash
 
+/-
+Design note : primitive signatures of the form
+
+  `Devm → Except (String × Devm) (α × Devm)`
+
+are deliberately made isomorphic to `EStateM String Devm α`. Future edits shall
+not break this isomorphism. In the future, the codebase may migrate to explicit
+use of `EStateM` to hide the passing/updating of `devm : Devm` terms.
+-/
+
 abbrev AccessList : Type := List (Adr × List B256)
 
 instance : ToString AccessList := ⟨@List.toString _ _⟩
@@ -1991,20 +2001,20 @@ def Rinst.runCore
     pushItem (devm.getTransVal sevm.currentTarget key) gasWarmAccess devm
   | .pc => pushItem pc.toB256 gBase devm
   | .sstore => do
-    let ⟨key, devm1⟩ ← devm.pop
-    let ⟨new_value, devm2⟩ ← devm1.pop
+    let ⟨key, devm⟩ ← devm.pop
+    let ⟨new_value, devm⟩ ← devm.pop
     .assert
-      (gCallStipend < devm2.gasLeft)
-      ⟨"OutOfGasError", devm2⟩
+      (gCallStipend < devm.gasLeft)
+      ⟨"OutOfGasError", devm⟩
     let ct := sevm.currentTarget
     let original_value := getOrigStorVal sevm ct key
-    let current_value := devm2.getStorVal ct key
-    let ⟨devm3, gasCost2⟩ ← .ok <|
-      if ⟨ct, key⟩ ∉ devm2.accessedStorageKeys then
-        ( ⟨ addAccessedStorageKey devm2 ct key,
+    let current_value := devm.getStorVal ct key
+    let ⟨devm, gasCost2⟩ ← .ok <|
+      if ⟨ct, key⟩ ∉ devm.accessedStorageKeys then
+        ( ⟨ addAccessedStorageKey devm ct key,
             gasColdSload ⟩ : Devm × Nat )
       else
-        ⟨devm2, 0⟩
+        ⟨devm, 0⟩
     let gasCost3 ← .ok <|
       if original_value = current_value ∧ current_value ≠ new_value then
         if original_value = 0 then
@@ -2013,15 +2023,15 @@ def Rinst.runCore
           gasCost2 + (gasStorageUpdate - gasColdSload)
       else
         gasCost2 + gasWarmAccess
-    let devm4 ← .ok <| devm3.withRefundCounter <|
+    let devm ← .ok <| devm.withRefundCounter <|
       sstore_new_refund_counter
         new_value
         original_value
         current_value
-        devm3.refundCounter
-    let devm5 ← chargeGas gasCost3 devm4
-    assertDynamic sevm devm5
-    .ok (devm5.setStorVal sevm.currentTarget key new_value)
+        devm.refundCounter
+    let devm ← chargeGas gasCost3 devm
+    assertDynamic sevm devm
+    .ok (devm.setStorVal sevm.currentTarget key new_value)
   | .tstore => do
     let ⟨key, devm⟩ ← devm.pop
     let ⟨new_value, devm⟩ ← devm.pop
@@ -2310,30 +2320,30 @@ def Linst.run (sevm : Sevm) (devm : Devm) :
     .ok (devm.withOutput output)
   | .dest => do
     let donor := sevm.currentTarget
-    let ⟨donee, devm1⟩ ← devm.popToAdr
-    let donorBal ← .ok (devm1.getAcct sevm.currentTarget).bal
-    let ⟨devm2, gasCost2⟩ ← .ok <|
-      if donee ∉ devm1.accessedAddresses
+    let ⟨donee, devm⟩ ← devm.popToAdr
+    let donorBal ← .ok (devm.getAcct sevm.currentTarget).bal
+    let ⟨devm, gasCost2⟩ ← .ok <|
+      if donee ∉ devm.accessedAddresses
         then
-          ( ⟨ addAccessedAddress devm1 donee,
+          ( ⟨ addAccessedAddress devm donee,
               gasSelfDestruct + gasColdAccountAccess ⟩ : Devm × Nat )
         else
-          ⟨devm1, gasSelfDestruct⟩
+          ⟨devm, gasSelfDestruct⟩
     let gasCost3 ← .ok <|
-      if (devm2.getAcct donee).Empty ∧ donorBal ≠ 0 then
+      if (devm.getAcct donee).Empty ∧ donorBal ≠ 0 then
         gasCost2 + gasSelfDestructNewAccount
       else
         gasCost2
-    let devm3 ← chargeGas gasCost3 devm2
-    assertDynamic sevm devm3
-    let devm4 ←
-      (devm3.subBal donor donorBal).toExcept
-        ⟨"ERROR : InsufficientBalanceError", devm3⟩
-    let devm5 ← .ok <| devm4.addBal donee donorBal
-    if donor ∈ devm5.createdAccounts then
-      .ok (addAccountToDelete (devm5.setBal donor 0) donor)
+    let devm ← chargeGas gasCost3 devm
+    assertDynamic sevm devm
+    let devm ←
+      (devm.subBal donor donorBal).toExcept
+        ⟨"ERROR : InsufficientBalanceError", devm⟩
+    let devm ← .ok <| devm.addBal donee donorBal
+    if donor ∈ devm.createdAccounts then
+      .ok (addAccountToDelete (devm.setBal donor 0) donor)
     else
-      .ok devm5
+      .ok devm
 
 def except64th (n : Nat) : Nat := n - (n / 64)
 
@@ -3230,26 +3240,26 @@ mutual
       Fueled.assert
         (memorySize ≤ maxInitCodeSize)
         ⟨"OutOfGasError", devm⟩
-      let devm1 ← Fueled.ok <| addAccessedAddress devm newAddress
-      let createMsgGas ← Fueled.ok <| except64th devm1.gasLeft
-      let devm2 ← Fueled.ok <| devm1.withGasLeft (devm1.gasLeft - createMsgGas)
-      assertDynamic sevm devm2
-      let devm3 ← Fueled.ok <| devm2.withReturnData []
-      let sender ← Fueled.ok <| devm3.state.get sevm.currentTarget
+      let devm ← Fueled.ok <| addAccessedAddress devm newAddress
+      let createMsgGas ← Fueled.ok <| except64th devm.gasLeft
+      let devm ← Fueled.ok <| devm.withGasLeft (devm.gasLeft - createMsgGas)
+      assertDynamic sevm devm
+      let devm ← Fueled.ok <| devm.withReturnData []
+      let sender ← Fueled.ok <| devm.state.get sevm.currentTarget
       if ( sender.bal < endowment ∨
            sender.nonce = B64.max ∨
            sevm.depth = 0 ) then
-        return (← (devm3.withGasLeft (devm3.gasLeft + createMsgGas)).push 0)
-      let devm4 ← Fueled.ok <| devm3.incrNonce sevm.currentTarget
+        return (← (devm.withGasLeft (devm.gasLeft + createMsgGas)).push 0)
+      let devm ← Fueled.ok <| devm.incrNonce sevm.currentTarget
       if
-        ( let target := devm4.state.get newAddress
+        ( let target := devm.state.get newAddress
           target.nonce ≠ (0 : B64) ∨
           target.code.size ≠ 0 ∨
           target.stor.size ≠ 0 ) then
-        return (← devm4.push 0)
+        return (← devm.push 0)
       let childMsg : Msg ← Fueled.ok <| {
-        benv := Benv.mk devm4.state devm4.createdAccounts sevm.benvStat
-        tenv := {transientStorage := devm4.transientStorage, stat := sevm.tenvStat} --devm4.tenv
+        benv := Benv.mk devm.state devm.createdAccounts sevm.benvStat
+        tenv := {transientStorage := devm.transientStorage, stat := sevm.tenvStat}
         caller := sevm.currentTarget
         target := .none
         gas := createMsgGas
@@ -3261,16 +3271,16 @@ mutual
         codeAddress := .none
         shouldTransferValue := true
         isStatic := false
-        accessedAddresses := devm4.accessedAddresses
-        accessedStorageKeys := devm4.accessedStorageKeys
+        accessedAddresses := devm.accessedAddresses
+        accessedStorageKeys := devm.accessedStorageKeys
         disablePrecompiles := false
       }
-      let child ← Fueled.mapResult (liftToExecution devm4) <|
+      let child ← Fueled.mapResult (liftToExecution devm) <|
         processCreateMessage childMsg lim
       if child.error.isSome then
-        (incorporateChildOnError devm4 child child.output).push 0
+        (incorporateChildOnError devm child child.output).push 0
       else
-        (incorporateChildOnSuccess devm4 child []).push newAddress.toB256
+        (incorporateChildOnSuccess devm child []).push newAddress.toB256
   termination_by lim => lim
 
   def genericCall
@@ -3313,70 +3323,70 @@ mutual
       Xinst → Nat → Fueled (String × Devm) Devm
     |  _, 0 => Fueled.exhausted
     | .create, lim + 1 => do
-      let ⟨endowment, devm1⟩ ← devm.pop
-      let ⟨memoryIndex, devm2⟩ ← devm1.popToNat
-      let ⟨memorySize, devm3⟩ ← devm2.popToNat
-      let extendCost ← Fueled.ok <| devm3.extCost [⟨memoryIndex, memorySize⟩]
+      let ⟨endowment, devm⟩ ← devm.pop
+      let ⟨memoryIndex, devm⟩ ← devm.popToNat
+      let ⟨memorySize, devm⟩ ← devm.popToNat
+      let extendCost ← Fueled.ok <| devm.extCost [⟨memoryIndex, memorySize⟩]
       let initCodeCost ← Fueled.ok <| gasInitCodeWordCost * (ceilDiv memorySize 32)
-      let devm4 ← chargeGas (gasCreate + extendCost + initCodeCost) devm3
-      let devm5 ← Fueled.ok <| devm4.memExtends [⟨memoryIndex, memorySize⟩]
+      let devm ← chargeGas (gasCreate + extendCost + initCodeCost) devm
+      let devm ← Fueled.ok <| devm.memExtends [⟨memoryIndex, memorySize⟩]
       let newAddress ← Fueled.ok <|
         compute_contract_address
           sevm.currentTarget
-          (devm5.state.get sevm.currentTarget).nonce
+          (devm.state.get sevm.currentTarget).nonce
       genericCreate
         sevm
-        devm5
+        devm
         endowment
         newAddress
         memoryIndex
         memorySize
         lim
     | .create2, lim + 1 => do
-      let ⟨endowment, devm1⟩ ← devm.pop
-      let ⟨memoryIndex, devm2⟩ ← devm1.popToNat
-      let ⟨memorySize, devm3⟩ ← devm2.popToNat
-      let ⟨salt, devm4⟩ ← devm3.pop
-      let extendCost ← Fueled.ok <| devm4.extCost [⟨memoryIndex, memorySize⟩]
+      let ⟨endowment, devm⟩ ← devm.pop
+      let ⟨memoryIndex, devm⟩ ← devm.popToNat
+      let ⟨memorySize, devm⟩ ← devm.popToNat
+      let ⟨salt, devm⟩ ← devm.pop
+      let extendCost ← Fueled.ok <| devm.extCost [⟨memoryIndex, memorySize⟩]
       let initCodeHashCost ← Fueled.ok <|
         gasKeccak256Word * ceilDiv memorySize 32
       let initCodeCost ← Fueled.ok <|
         gasInitCodeWordCost * (ceilDiv memorySize 32)
-      let devm5 ←
+      let devm ←
         chargeGas
           (gasCreate + initCodeHashCost + extendCost + initCodeCost)
-          devm4
-      let devm6 ← Fueled.ok <| devm5.memExtends [⟨memoryIndex, memorySize⟩]
+          devm
+      let devm ← Fueled.ok <| devm.memExtends [⟨memoryIndex, memorySize⟩]
       let newAddress ← Fueled.ok <|
         create2NewAddress
           sevm.currentTarget
           salt
-          (devm6.memory.data.sliceD memoryIndex memorySize 0)
+          (devm.memory.data.sliceD memoryIndex memorySize 0)
       genericCreate
         sevm
-        devm6
+        devm
         endowment
         newAddress
         memoryIndex
         memorySize
         lim
     | .call, lim + 1 => do
-      let ⟨gas, devm1⟩ ← devm.pop
-      let ⟨callee, devm2⟩ ← devm1.popToAdr
-      let ⟨value, devm3⟩ ← devm2.pop
-      let ⟨inputIndex, devm4⟩ ← devm3.popToNat
-      let ⟨inputSize, devm5⟩ ← devm4.popToNat
-      let ⟨outputIndex, devm6⟩ ← devm5.popToNat
-      let ⟨outputSize, devm7⟩ ← devm6.popToNat
+      let ⟨gas, devm⟩ ← devm.pop
+      let ⟨callee, devm⟩ ← devm.popToAdr
+      let ⟨value, devm⟩ ← devm.pop
+      let ⟨inputIndex, devm⟩ ← devm.popToNat
+      let ⟨inputSize, devm⟩ ← devm.popToNat
+      let ⟨outputIndex, devm⟩ ← devm.popToNat
+      let ⟨outputSize, devm⟩ ← devm.popToNat
       let extendCost ← Fueled.ok <|
-        devm7.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
-      let preAccessCost ← Fueled.ok <| access_cost callee devm7.accessedAddresses
-      let devm8 ← Fueled.ok <| addAccessedAddress devm7 callee
-      let ⟨disablePrecompiles, _, code, delegatedAccessGasCost, devm9⟩ ← Fueled.ok <|
-        accessDelegation devm8 callee
+        devm.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      let preAccessCost ← Fueled.ok <| access_cost callee devm.accessedAddresses
+      let devm ← Fueled.ok <| addAccessedAddress devm callee
+      let ⟨disablePrecompiles, _, code, delegatedAccessGasCost, devm⟩ ← Fueled.ok <|
+        accessDelegation devm callee
       let accessCost ← Fueled.ok <| preAccessCost + delegatedAccessGasCost
       let createCost ← Fueled.ok <|
-        if (¬ (devm9.getAcct callee).Empty) ∨ value = 0
+        if (¬ (devm.getAcct callee).Empty) ∨ value = 0
         then 0
         else gNewAccount
       let transferCost ← Fueled.ok <| if value = 0 then 0 else gasCallValue
@@ -3384,22 +3394,22 @@ mutual
         calculateMsgCallGas
           value.toNat
           gas.toNat
-          devm9.gasLeft
+          devm.gasLeft
           extendCost
           (accessCost + createCost + transferCost)
-      let devm10 ← chargeGas (msgCallCost + extendCost) devm9
-      Fueled.assert (!sevm.isStatic ∨ value = 0) ⟨"WriteInStaticContext", devm10⟩
-      let devm11 ← Fueled.ok <|
-        devm10.memExtends
+      let devm ← chargeGas (msgCallCost + extendCost) devm
+      Fueled.assert (!sevm.isStatic ∨ value = 0) ⟨"WriteInStaticContext", devm⟩
+      let devm ← Fueled.ok <|
+        devm.memExtends
           [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
-      let senderBal ← Fueled.ok <| (devm11.getAcct sevm.currentTarget).bal
+      let senderBal ← Fueled.ok <| (devm.getAcct sevm.currentTarget).bal
       if senderBal < value then
-        let devm12 ← devm11.push 0
-        Fueled.ok ((devm12.withReturnData []).withGasLeft (devm12.gasLeft + msgCallStipend))
+        let devm ← devm.push 0
+        Fueled.ok ((devm.withReturnData []).withGasLeft (devm.gasLeft + msgCallStipend))
       else
         genericCall
           sevm
-          devm11
+          devm
           msgCallStipend
           value
           sevm.currentTarget
@@ -3415,42 +3425,42 @@ mutual
           disablePrecompiles
           lim
     | .callcode, lim + 1 => do
-      let ⟨gas, devm1⟩ ← devm.pop
-      let ⟨codeAddress, devm2⟩ ← devm1.popToAdr
-      let ⟨value, devm3⟩ ← devm2.pop
-      let ⟨inputIndex, devm4⟩ ← devm3.popToNat
-      let ⟨inputSize, devm5⟩ ← devm4.popToNat
-      let ⟨outputIndex, devm6⟩ ← devm5.popToNat
-      let ⟨outputSize, devm7⟩ ← devm6.popToNat
+      let ⟨gas, devm⟩ ← devm.pop
+      let ⟨codeAddress, devm⟩ ← devm.popToAdr
+      let ⟨value, devm⟩ ← devm.pop
+      let ⟨inputIndex, devm⟩ ← devm.popToNat
+      let ⟨inputSize, devm⟩ ← devm.popToNat
+      let ⟨outputIndex, devm⟩ ← devm.popToNat
+      let ⟨outputSize, devm⟩ ← devm.popToNat
       let extendCost ← Fueled.ok <|
-        devm7.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
-      let preAccessCost ← Fueled.ok <| access_cost codeAddress devm7.accessedAddresses
-      let devm8 ← Fueled.ok <| addAccessedAddress devm7 codeAddress
-      let ⟨disablePrecompiles, newCodeAddress, code, delegatedAccessGasCost, devm9⟩ ← Fueled.ok <|
-        accessDelegation devm8 codeAddress
+        devm.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      let preAccessCost ← Fueled.ok <| access_cost codeAddress devm.accessedAddresses
+      let devm ← Fueled.ok <| addAccessedAddress devm codeAddress
+      let ⟨disablePrecompiles, newCodeAddress, code, delegatedAccessGasCost, devm⟩ ← Fueled.ok <|
+        accessDelegation devm codeAddress
       let accessCost ← Fueled.ok <| preAccessCost + delegatedAccessGasCost
       let transferCost ← Fueled.ok <| if value = 0 then 0 else gasCallValue
       let ⟨msgCallCost, msgCallStipend⟩ ← Fueled.ok <|
         calculateMsgCallGas
           value.toNat
           gas.toNat
-          devm9.gasLeft
+          devm.gasLeft
           extendCost
           (accessCost + transferCost)
-      let devm10 ← chargeGas (msgCallCost + extendCost) devm9
-      let devm11 ← Fueled.ok <|
-        devm10.memExtends
+      let devm ← chargeGas (msgCallCost + extendCost) devm
+      let devm ← Fueled.ok <|
+        devm.memExtends
           [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
-      let senderBal ← Fueled.ok (devm11.getAcct sevm.currentTarget).bal
+      let senderBal ← Fueled.ok (devm.getAcct sevm.currentTarget).bal
       if senderBal < value
       then
-        let devm12 ← devm11.push 0
+        let devm ← devm.push 0
         Fueled.ok <|
-          (devm12.withGasLeft (devm12.gasLeft + msgCallStipend)).withReturnData []
+          (devm.withGasLeft (devm.gasLeft + msgCallStipend)).withReturnData []
       else
         genericCall
           sevm
-          devm11
+          devm
           msgCallStipend
           value
           sevm.currentTarget
@@ -3466,33 +3476,33 @@ mutual
           disablePrecompiles
           lim
     | .delcall, lim + 1 => do
-      let ⟨gas, devm1⟩ ← devm.pop
-      let ⟨codeAddress, devm2⟩ ← devm1.popToAdr
-      let ⟨inputIndex, devm3⟩ ← devm2.popToNat
-      let ⟨inputSize, devm4⟩ ← devm3.popToNat
-      let ⟨outputIndex, devm5⟩ ← devm4.popToNat
-      let ⟨outputSize, devm6⟩ ← devm5.popToNat
+      let ⟨gas, devm⟩ ← devm.pop
+      let ⟨codeAddress, devm⟩ ← devm.popToAdr
+      let ⟨inputIndex, devm⟩ ← devm.popToNat
+      let ⟨inputSize, devm⟩ ← devm.popToNat
+      let ⟨outputIndex, devm⟩ ← devm.popToNat
+      let ⟨outputSize, devm⟩ ← devm.popToNat
       let extendCost ← Fueled.ok <|
-        devm6.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
-      let preAccessCost ← Fueled.ok <| access_cost codeAddress devm6.accessedAddresses
-      let devm7 ← Fueled.ok <| addAccessedAddress devm6 codeAddress
-      let ⟨disablePrecompiles, newCodeAddress, code, delegatedAccessGasCost, devm8⟩ ← Fueled.ok <|
-        accessDelegation devm7 codeAddress
+        devm.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      let preAccessCost ← Fueled.ok <| access_cost codeAddress devm.accessedAddresses
+      let devm ← Fueled.ok <| addAccessedAddress devm codeAddress
+      let ⟨disablePrecompiles, newCodeAddress, code, delegatedAccessGasCost, devm⟩ ← Fueled.ok <|
+        accessDelegation devm codeAddress
       let accessCost ← Fueled.ok <| preAccessCost + delegatedAccessGasCost
       let ⟨msgCallCost, msgCallStipend⟩ ← Fueled.ok <|
         calculateMsgCallGas
           0
           gas.toNat
-          devm8.gasLeft
+          devm.gasLeft
           extendCost
           accessCost
-      let devm9 ← chargeGas (msgCallCost + extendCost) devm8
-      let devm10 ← Fueled.ok <|
-        devm9.memExtends
+      let devm ← chargeGas (msgCallCost + extendCost) devm
+      let devm ← Fueled.ok <|
+        devm.memExtends
           [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
       genericCall
         sevm
-        devm10
+        devm
         msgCallStipend
         sevm.value
         sevm.caller
@@ -3508,33 +3518,33 @@ mutual
         disablePrecompiles
         lim
     | .statcall, lim + 1 => do
-      let ⟨gas, devm1⟩ ← devm.pop
-      let ⟨target, devm2⟩ ← devm1.popToAdr
-      let ⟨inputIndex, devm3⟩ ← devm2.popToNat
-      let ⟨inputSize, devm4⟩ ← devm3.popToNat
-      let ⟨outputIndex, devm5⟩ ← devm4.popToNat
-      let ⟨outputSize, devm6⟩ ← devm5.popToNat
+      let ⟨gas, devm⟩ ← devm.pop
+      let ⟨target, devm⟩ ← devm.popToAdr
+      let ⟨inputIndex, devm⟩ ← devm.popToNat
+      let ⟨inputSize, devm⟩ ← devm.popToNat
+      let ⟨outputIndex, devm⟩ ← devm.popToNat
+      let ⟨outputSize, devm⟩ ← devm.popToNat
       let extendCost ← Fueled.ok <|
-        devm6.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
-      let preAccessCost ← Fueled.ok <| access_cost target devm6.accessedAddresses
-      let devm7 ← Fueled.ok <| addAccessedAddress devm6 target
-      let ⟨disablePrecompiles, _, code, delegatedAccessGasCost, devm8⟩ ←
-        Fueled.ok <| accessDelegation devm7 target
+        devm.extCost [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
+      let preAccessCost ← Fueled.ok <| access_cost target devm.accessedAddresses
+      let devm ← Fueled.ok <| addAccessedAddress devm target
+      let ⟨disablePrecompiles, _, code, delegatedAccessGasCost, devm⟩ ←
+        Fueled.ok <| accessDelegation devm target
       let accessCost ← Fueled.ok <| preAccessCost + delegatedAccessGasCost
       let ⟨msgCallCost, msgCallStipend⟩ ← Fueled.ok <|
         calculateMsgCallGas
           0
           gas.toNat
-          devm8.gasLeft
+          devm.gasLeft
           extendCost
           accessCost
-      let devm9 ← chargeGas (msgCallCost + extendCost) devm8
-      let devm10 ← Fueled.ok <|
-        devm9.memExtends
+      let devm ← chargeGas (msgCallCost + extendCost) devm
+      let devm ← Fueled.ok <|
+        devm.memExtends
           [⟨inputIndex, inputSize⟩, ⟨outputIndex, outputSize⟩]
       genericCall
         sevm
-        devm10
+        devm
         msgCallStipend
         0
         sevm.currentTarget
