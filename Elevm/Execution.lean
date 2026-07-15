@@ -3,13 +3,27 @@ import Elevm.EC
 import Elevm.Hash
 
 /-
-Design note : primitive signatures of the form
+Design note #1: primitive signatures of the form
 
   `Devm → Except (String × Devm) (α × Devm)`
 
 are deliberately made isomorphic to `EStateM String Devm α`. Future edits shall
 not break this isomorphism. In the future, the codebase may migrate to explicit
 use of `EStateM` to hide the passing/updating of `devm : Devm` terms.
+-/
+
+/-
+Design note #2: All semantics definitions must obey the following guideline:
+
+  - no `mut` bindings
+  - no `for` lopps
+  - no unnamed large record literals
+  - `let ← .ok` seams at inversion points
+  - named defs for messages/records that would bloat contexts.
+
+This guideline exists to prevent context bloat & facilitate downstream
+verificaiton work. It should be considered a style contract between `elevm`
+and the projects which depend on it, including `blanc`.
 -/
 
 abbrev AccessList : Type := List (Adr × List B256)
