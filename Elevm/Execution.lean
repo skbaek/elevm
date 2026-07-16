@@ -227,8 +227,12 @@ def Auth.toBLT (auth : Auth) : BLT :=
     .b8s <| auth.address.toB8L,
     .b8s auth.nonce.toNat.toB8L,
     .b8s auth.yParity.toB8L,
-    .b8s auth.r.toB8L,
-    .b8s auth.s.toB8L,
+    -- `r` and `s` are RLP scalars, so they must re-encode minimally: a fixed
+    -- 32-byte encoding diverges from the canonical bytes whenever a signature
+    -- scalar has a leading zero byte, corrupting both the type-4 signing hash
+    -- and the transactions trie.
+    .b8s auth.r.toB8L.sig,
+    .b8s auth.s.toB8L.sig,
   ]
 
 def Tx.toBLT (tx : Tx) : BLT :=
@@ -5803,6 +5807,19 @@ private def reencodes (type : B8) (v : B8L) : Bool :=
 #guard reencodes 0x02 <| type2Vector [0x0a] testRecipient [0x02]
 #guard reencodes 0x03 <| type3Vector [0x01] testRecipient testBlobHash
 #guard reencodes 0x04 <| type4Vector testRecipient goodAuth
+
+-- An authorization signature scalar below 2^248 encodes canonically in fewer
+-- than thirty-two bytes. It must re-encode minimally: a fixed 32-byte
+-- re-encoding diverges from the canonical bytes for ~0.8% of valid
+-- authorizations, corrupting the type-4 signing hash and transactions trie.
+private def shortWidthScalar : B8L := 0x01 :: List.replicate 30 0x00
+
+#guard reencodes 0x04 <| type4Vector testRecipient <|
+  authOf [0x01] testRecipient [0x01] shortWidthScalar fullWidthScalar
+#guard reencodes 0x04 <| type4Vector testRecipient <|
+  authOf [0x01] testRecipient [0x01] fullWidthScalar shortWidthScalar
+#guard reencodes 0x04 <| type4Vector testRecipient <|
+  authOf [0x01] testRecipient [0x01] [0x01] [0x02]
 
 -- A type-1/type-2 receiver may be empty, meaning contract creation...
 #guard (B8L.toExStrTx (type2Vector [0x0a] [] [0x02])).toOption.isSome
