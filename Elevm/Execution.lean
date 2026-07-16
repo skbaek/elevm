@@ -849,6 +849,14 @@ def Msg.withBenv (msg : Msg) (benv : Benv) : Msg :=
 def Benv.withState (benv : Benv) (st : State) : Benv :=
   {benv with state := st}
 
+-- `origState` is the original state of a *transaction*, not of a block: it is
+-- what `SSTORE` compares against to tell a clean update from a dirty one
+-- (finding 3.8). Every normal and system transaction must open with this so
+-- that its own input state, rather than the block prestate, is the original
+-- state. Everything else about the environment is preserved.
+def Benv.beginTransaction (benv : Benv) : Benv :=
+  {benv with stat := {benv.stat with origState := benv.state}}
+
 def hasErrorType (err errType : String) : Bool :=
   err = errType || String.isPrefixOf (errType ++ " : ") err
 
@@ -2138,6 +2146,33 @@ instance : Inhabited Benv := ⟨
     stat := default
   }
 ⟩
+
+-- Regression for the transaction-scoped `origState` reset (finding 3.8). Slot
+-- `(a, k)` already holds a nonzero value in the block prestate. The first
+-- transaction sees that prestate value as its original value and overwrites the
+-- slot; the second must then see the *first transaction's output* -- its own
+-- input -- as the original value. Reusing the block prestate here is what made
+-- `SSTORE` charge a dirty-update 100 rather than a clean-update 2900, the
+-- 2,800-gas deficit of `extcodehashEmptySuicide`.
+private def origStateRegressionOrigVals : B256 × B256 :=
+  let a : Adr := (0x5678 : Adr)
+  let k : B256 := Nat.toB256 7
+  let prestate : State := State.setStorVal .empty a k (Nat.toB256 11)
+  let benv0 : Benv := {(default : Benv) with state := prestate}
+  -- transaction 1: open the boundary, read the original value, write the slot
+  let benv1 : Benv := benv0.beginTransaction
+  let orig1 : B256 := (benv1.stat.origState.get a).stor.get k
+  let benv1 : Benv := benv1.setStorVal a k (Nat.toB256 22)
+  -- transaction 2: open the boundary, read the original value
+  let benv2 : Benv := benv1.beginTransaction
+  let orig2 : B256 := (benv2.stat.origState.get a).stor.get k
+  ⟨orig1, orig2⟩
+
+#guard origStateRegressionOrigVals = ⟨Nat.toB256 11, Nat.toB256 22⟩
+
+-- The same slot, with the boundary opened only once per block, is the defect:
+-- the second transaction would have kept reading the block prestate value 11.
+#guard origStateRegressionOrigVals.2 ≠ origStateRegressionOrigVals.1
 
 instance : Inhabited TenvStat := ⟨
   {
@@ -4511,6 +4546,7 @@ def processTransaction
   -- `mut`/`for` form except that the final account-deletion `for` is expressed
   -- as `foldl`, which agrees because `destroyAccount` commutes over the
   -- distinct addresses of the `accountsToDelete` set.
+  let benv := benv.beginTransaction
   let bout ← .ok {bout with
     transactionsTrie := bout.transactionsTrie.insert (BLT.b8s index.toB8L).toB8L tx}
   let ⟨intrinsicGas, calldataFloorGasCost⟩ ← validateTransaction tx
@@ -4802,9 +4838,13 @@ def processSystemTransactionMsg (benv : Benv) (tenv : Tenv)
   }
 
 -- process_system_transaction
+-- The single boundary shared by all four system transactions (beacon roots,
+-- history storage, withdrawal requests, consolidation requests), so each takes
+-- its own input state as the original state.
 def processSystemTransaction (benv : Benv)
   (target : Adr) (code : ByteArray) (data : B8L) :
   Except String (State × MsgCallOutput) := do
+  let benv := benv.beginTransaction
   let txEnv : Tenv := processSystemTransactionTenv benv
   let systemTxMsg : Msg :=
     processSystemTransactionMsg benv txEnv target data code
