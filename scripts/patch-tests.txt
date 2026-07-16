@@ -8,4 +8,3 @@ ValidBlocks/bcStateTests/blockhashTests.json
 ValidBlocks/bcStateTests/extcodehashEmptySuicide.json
 ValidBlocks/bcStateTests/refundReset.json
 ValidBlocks/bcValidBlockTest/eip2930.json
-GeneralStateTests/stTimeConsuming/CALLBlake2f_MaxRounds.json

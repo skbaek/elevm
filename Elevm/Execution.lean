@@ -741,10 +741,34 @@ instance {a b : Adr} : Decidable (a = b) := by
   rw [Prod.ext_iff]; apply instDecidableAnd
 
 instance : Hashable Adr := ⟨fun x => x.2.2⟩
-instance : Hashable (Adr × B256) := ⟨λ x => x.1.2.2⟩
+-- The storage-slot hash must depend on the key, not only the address: mix the
+-- address hash with all four 64-bit limbs of the B256 key (finding 3.9). A
+-- key-insensitive hash sent every same-address slot into one bucket.
+instance : Hashable (Adr × B256) :=
+  ⟨λ x =>
+    let k := x.2
+    mixHash (hash x.1) (mixHash k.1.1 (mixHash k.1.2 (mixHash k.2.1 k.2.2)))⟩
 
 abbrev AdrSet : Type := @Std.HashSet Adr _ _
 abbrev KeySet : Type := @Std.HashSet (Adr × B256) _ _
+
+-- Regression for the key-sensitive hash above. These four keys share one
+-- address but each sets a different 64-bit limb, so the old address-only hash
+-- collided them into a single bucket.
+private def keyHashRegressionKeys : List (Adr × B256) :=
+  let a : Adr := (0x1234 : Adr)
+  [ (a, Nat.toB256 1),
+    (a, Nat.toB256 (2 ^ 64)),
+    (a, Nat.toB256 (2 ^ 128)),
+    (a, Nat.toB256 (2 ^ 192)) ]
+
+-- distinct keys at one address must not all hash to the same value
+#guard (keyHashRegressionKeys.map (fun p => hash p)).eraseDups.length = 4
+
+-- a KeySet built from many same-address keys must still find each key
+#guard
+  let s : KeySet := .ofList keyHashRegressionKeys
+  s.size = 4 && keyHashRegressionKeys.all s.contains
 
 abbrev Tra : Type := Std.TreeMap Adr Stor compare
 
@@ -2691,18 +2715,6 @@ def Blake2.g (v : Array B64) (a b c d : Nat) (x y : B64) : Array B64 :=
   let v := v.set! b <| ((shiftArg >>> b2R4) ^^^ (shiftArg <<< b2wR4)) -- % b2.maxWord
   v
 
-def traceId {ξ : Type} (msg : String) (x : ξ) :=
-  dbg_trace msg ; x
-
-def iterRangeTrace (max : Nat) {ξ : Type} (k : Nat) (f : Nat → ξ → ξ) (x : ξ) : ξ :=
-  let rec aux : Nat → Nat → ξ → ξ
-    | _, 0, x => x
-    | m, n + 1, x =>
-      let i := m - (n + 1)
-      let x' := traceId s!"{i} / {max}" (f i x)
-      aux m n x' --<| f i x
-  aux k k x
-
 def iterRange {ξ : Type} (k : Nat) (f : Nat → ξ → ξ) (x : ξ) : ξ :=
   let rec aux : Nat → Nat → ξ → ξ
     | _, 0, x => x
@@ -2738,7 +2750,7 @@ def bCompress (numRounds : Nat)
     let s : Array Nat := blake2Sigma[r % blake2Sigma.size]!
     iterRange 8 (innerFun s) v
 
-  let arr := iterRangeTrace numRounds numRounds outerFun ⟨v⟩
+  let arr := iterRange numRounds outerFun ⟨v⟩
   let v := arr.toList
   let resultMsgWords :=
     (List.range 8).map <| fun i => h[i]! ^^^ v[i]! ^^^ v[(i + 8)]!
