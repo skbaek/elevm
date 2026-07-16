@@ -42,5 +42,5 @@ You are an expert mathematician and Lean 4 formalizer. Your role is to assist th
 
 - Project-scoped Codex configuration lives under `.codex/`.
 - Repository-scoped Codex skills live under `.agents/skills/`.
-- Keep all other Codex configuration and hooks under `.codex/` with no external client-config dependencies.
-- Codex command policy is implemented directly by `.codex/hooks/permit.py`.
+- Keep Codex configuration and hooks under `.codex/`; do not edit Claude Code setup files (`.claude/`, `CLAUDE.md`) when adapting Codex behavior.
+- Codex command policy: `.codex/hooks/permit.py` is a thin adapter with no policy of its own. It delegates to the canonical shared policy at `~/blanc/.claude/permit.py` (its `decide(command, cwd)` interface), the same master used by the Claude Code hooks in both repos. Policy changes belong in that master file, never in the adapters.
