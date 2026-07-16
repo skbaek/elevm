@@ -207,10 +207,11 @@ def classifyWith (routes : List ActualRoute) (err : String) : Option FixtureExce
 Registering a route is a claim that a specific producer raises a specific
 official identity. The header and post-transition producers are now precise
 enough for that claim: each rejection reason in `blockExceptionTags` is raised
-at exactly one site, so each maps to one identity. The transaction identities,
-and the three RLP identities, are still routed by later work -- their producers
-remain ambiguous, and an unroutable error fails closed rather than being waved
-through.
+at exactly one site, so each maps to one identity. The transaction identities
+are still routed by later work. The three RLP identities are exact here: a
+64-bit scalar overflow has its own route, omission of the post-Shanghai
+withdrawals component has its own route, and the remaining strict
+structural/canonical encoding failures route to structures encoding.
 
 Four block tags are deliberately absent, and their absence is the fail-closed
 choice rather than an oversight: `headerNonceTag`, `excessBlobGasTag`,
@@ -235,7 +236,14 @@ def actualRoutes : List ActualRoute :=
     (transactionsRootTag, blockInvalidTransactionsRoot),
     (receiptsRootTag, blockInvalidReceiptsRoot),
     (logBloomTag, blockInvalidLogBloom),
-    (withdrawalsRootTag, blockInvalidWithdrawalsRoot) ]
+    (withdrawalsRootTag, blockInvalidWithdrawalsRoot),
+    (rlpFieldOverflow64Tag, blockRlpInvalidFieldOverflow64),
+    (rlpWithdrawalsNotReadTag, blockRlpWithdrawalsNotRead),
+    (rlpStructureTag, blockRlpStructuresEncoding),
+    (rlpFixedWidthTag, blockRlpStructuresEncoding),
+    (rlpFieldOverflow256Tag, blockRlpStructuresEncoding),
+    (rlpLeadingZerosTag, blockRlpStructuresEncoding),
+    (rlpRoundTripTag, blockRlpStructuresEncoding) ]
 
 /-- The block tags with no fixture identity, listed so the coverage checks can
 assert that every block tag is either routed or knowingly unrouted. -/
@@ -428,6 +436,23 @@ private def sampleRoutes : List ActualRoute :=
 #guard (classifyWith sampleRoutes "InvalidGasLimitAbsoluteX").isNone
 #guard (classifyWith sampleRoutes "Error: InvalidGasLimitAbsolute").isNone
 #guard (classifyWith sampleRoutes "wrapped InvalidGasLimitAbsolute : detail").isNone
+
+-- The strict block-RLP routes are one-to-one at the producer boundary. In
+-- particular, the two withdrawal-index overflows cannot be confused with the
+-- later re-encoding invariant, and an omitted withdrawals list cannot be
+-- mistaken for an arbitrary malformed list.
+#guard classify
+  s!"{rlpFieldOverflow64Tag} : withdrawal globalIndex scalar is 9 bytes"
+    == some blockRlpInvalidFieldOverflow64
+#guard classify
+  s!"{rlpWithdrawalsNotReadTag} : post-Shanghai block body omits the withdrawals list"
+    == some blockRlpWithdrawalsNotRead
+#guard classify
+  s!"{rlpStructureTag} : block : expected four items"
+    == some blockRlpStructuresEncoding
+#guard classify
+  s!"{rlpRoundTripTag} : decoded block does not re-encode byte-for-byte"
+    == some blockRlpStructuresEncoding
 #guard (classifyWith sampleRoutes "").isNone
 
 -- Unregistered errors do not classify. In particular the old broad strings the
@@ -438,18 +463,29 @@ private def sampleRoutes : List ActualRoute :=
 #guard (classifyWith sampleRoutes "DecodingError : unexpected list length").isNone
 #guard (classifyWith sampleRoutes "EncodingError").isNone
 
--- The real route table: the block half is now registered, the transaction half
--- is not. `classify` still recognizes nothing it has not been told about.
+-- The real route table: the block and strict-RLP halves are now registered,
+-- while the transaction half is not. `classify` still recognizes nothing it
+-- has not been told about.
 #guard (classify "InvalidBlock").isNone
 #guard (classify "InvalidGasLimitAbsolute").isNone
 
--- Each route key is a real producer tag, each is registered once, and each maps
--- to one identity. A key registered twice, or two keys sharing an identity,
--- would make "the one canonical identity" a fiction.
-#guard actualRoutes.length = 17
-#guard (actualRoutes.map Prod.fst).eraseDups.length = 17
-#guard (actualRoutes.map Prod.snd).eraseDups.length = 17
-#guard actualRoutes.all fun r => blockExceptionTags.contains r.fst
+-- Each route key is a real producer tag and is registered once. Several
+-- distinct structural/canonical RLP failures intentionally share the official
+-- `RLP_STRUCTURES_ENCODING` identity, but a single actual tag still has only
+-- one canonical reading.
+def routedRlpTags : List String :=
+  [ rlpFieldOverflow64Tag, rlpWithdrawalsNotReadTag, rlpStructureTag,
+    rlpFixedWidthTag, rlpFieldOverflow256Tag, rlpLeadingZerosTag,
+    rlpRoundTripTag ]
+
+#guard actualRoutes.length = 24
+#guard (actualRoutes.map Prod.fst).eraseDups.length = 24
+#guard (actualRoutes.map Prod.snd).eraseDups.length = 20
+#guard actualRoutes.all fun r =>
+  blockExceptionTags.contains r.fst || routedRlpTags.contains r.fst
+#guard routedRlpTags.length = 7
+#guard routedRlpTags.eraseDups.length = 7
+#guard routedRlpTags.all fun t => (actualRoutes.map Prod.fst).contains t
 
 -- Every block tag is either routed or knowingly unrouted -- a new rejection
 -- reason cannot be added without landing in one list or the other.
@@ -489,9 +525,12 @@ private def sampleRoutes : List ActualRoute :=
 #guard unroutedBlockTags.all fun t => (classify t).isNone
 #guard unroutedBlockTags.all fun t => (classify s!"{t} : detail").isNone
 
--- The transaction and RLP halves are still unrouted; later steps fill them.
-#guard (classify rlpStructureTag).isNone
-#guard (classify rlpFieldOverflow64Tag).isNone
+-- Strict RLP failures are routed, but broad legacy decoder categories remain
+-- unclassifiable.
+#guard classify rlpStructureTag == some blockRlpStructuresEncoding
+#guard classify rlpFieldOverflow64Tag == some blockRlpInvalidFieldOverflow64
+#guard (classify "DecodingError").isNone
+#guard (classify "EncodingError").isNone
 
 -- The matcher is set membership on the one classified identity -- never
 -- "some failure occurred". Shown against the synthetic table so the semantics

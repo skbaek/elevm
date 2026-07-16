@@ -1048,6 +1048,17 @@ def rlpFieldOverflow256Tag : String := "RlpFieldOverflow256Error"
 /-- A scalar is within its width but not canonically encoded. -/
 def rlpLeadingZerosTag : String := "RlpLeadingZerosError"
 
+/-- A Prague block body omitted the withdrawals component altogether. This is
+not the same failure as an arbitrary malformed block-list shape: the fixture
+vocabulary assigns the omission its own consensus identity. -/
+def rlpWithdrawalsNotReadTag : String := "RlpWithdrawalsNotReadError"
+
+/-- The RLP decoded with valid local field shapes, but was not the canonical
+encoding reconstructed from the decoded block. Kept distinct internally from
+an initial structural decoding failure even though both map to the fixture's
+`RLP_STRUCTURES_ENCODING` identity. -/
+def rlpRoundTripTag : String := "RlpRoundTripError"
+
 /-- The error for an RLP item whose structure is not what the field requires.
 Kept here so structure failures read the same at every call site. -/
 def rlpStructureError (name : String) (detail : String) : String :=
@@ -1126,11 +1137,12 @@ def B8L.toRlpReceiver (name : String) (xs : B8L) : Except String (Option Adr) :=
 
 private def rlpTags : List String :=
   [ rlpStructureTag, rlpFixedWidthTag, rlpFieldOverflow64Tag,
-    rlpFieldOverflow256Tag, rlpLeadingZerosTag ]
+    rlpFieldOverflow256Tag, rlpLeadingZerosTag,
+    rlpWithdrawalsNotReadTag, rlpRoundTripTag ]
 
 -- The tags are distinct, and none is a prefix of another: `hasErrorType` reads
 -- a tag up to a fixed " : ", so one tag must never be readable as another.
-#guard rlpTags.eraseDups.length = 5
+#guard rlpTags.eraseDups.length = 7
 #guard rlpTags.all fun t => (rlpTags.filter fun u => t.isPrefixOf u).length = 1
 
 -- The old generic RLP strings are not these tags, and these tags are not the
@@ -5486,17 +5498,22 @@ def BLT.toExStrWithdrawal : BLT → Except String Withdrawal
       .b8s recipient,
       .b8s amount
     ] => do
-    let globalIndex := globalIndex.toB64
-    let validatorIndex := validatorIndex.toB64
-    let recipient ← recipient.toAdr?.toExcept "error : invalid recipient address"
-    let amount := amount.toB256
+    -- Check every untrusted field before constructing the withdrawal. In
+    -- particular, `B8L.toB64` truncates modulo 2^64, so it may only see the
+    -- byte string returned by the at-most-eight-byte decoder.
+    let globalIndex ← globalIndex.toRlpB64 "withdrawal globalIndex"
+    let validatorIndex ← validatorIndex.toRlpB64 "withdrawal validatorIndex"
+    let recipient ← recipient.toRlpAdr "withdrawal recipient"
+    let amount ← amount.toRlpB256 "withdrawal amount"
     .ok {
       globalIndex := globalIndex,
       validatorIndex := validatorIndex,
       recipient := recipient,
       amount := amount
     }
-  | _ => .error "error : invalid withdrawal BLT format"
+  | _ =>
+    .error <| rlpStructureError "withdrawal"
+      "expected a list of four byte-string fields"
 
 def BLT.toExStrTx : BLT → Except String Tx
   | .list [
@@ -5509,17 +5526,31 @@ def BLT.toExStrTx : BLT → Except String Tx
       .b8s v,
       .b8s r,
       .b8s s
-    ] => .ok {
-      nonce := nonce.toB64,
-      gas := gas.toNat
-      value := value.toNat,
+    ] => do
+    let nonce ← nonce.toRlpB64 "legacy transaction nonce"
+    let gasPrice ← gasPrice.toRlpNat "legacy transaction gasPrice" 32
+    let gas ← gas.toRlpNat "legacy transaction gas" 32
+    let receiver ← receiver.toRlpReceiver "legacy transaction receiver"
+    let value ← value.toRlpNat "legacy transaction value" 32
+    let v ← v.toRlpNat "legacy transaction v" 32
+    -- Validate signature scalars before sender recovery, but retain their
+    -- minimally encoded byte representation so valid legacy signing and
+    -- encoding behavior is unchanged.
+    let _ ← r.toRlpB256 "legacy transaction r"
+    let _ ← s.toRlpB256 "legacy transaction s"
+    .ok {
+      nonce := nonce,
+      gas := gas
+      value := value,
       data := data,
-      v := v.toNat,
+      v := v,
       r := r,
       s := s,
-      type := .zero gasPrice.toNat receiver.toAdr?
+      type := .zero gasPrice receiver
     }
-  | .list _ => .error "error : invalid transaction BLT format"
+  | .list _ =>
+    .error <| rlpStructureError "legacy transaction"
+      "expected a list of nine byte-string fields"
   | .b8s xs => xs.toExStrTx
 
 def BLT.toExStrBlock : BLT → Except String Block
@@ -5542,7 +5573,12 @@ def BLT.toExStrBlock : BLT → Except String Block
       ommers := ommers,
       wds := withdrawals
     }
-  | _ => .error "error : invalid block BLT format"
+  | .list [_, .list _, .list _] =>
+    .error
+      s!"{rlpWithdrawalsNotReadTag} : post-Shanghai block body omits the withdrawals list"
+  | _ =>
+    .error <| rlpStructureError "block"
+      "expected [header, transactions, ommers, withdrawals] lists"
 
 /-
 rlpToBlock is equivalent to json_to_block from execution-specs.
@@ -5554,9 +5590,88 @@ with nonexistent RLP bytes exists, but is unreachable). its return
 type also omits the RLP bytes, since this is identical to the input.
 -/
 def rlpToBlock (rlp : B8L) : Except String (Block × B256) := do
-  let block_blt ← (B8L.toBLT? rlp).toExcept "error : cannot decode block from rlp"
+  let block_blt ← (B8L.toBLT? rlp).toExcept <|
+    rlpStructureError "block RLP" "cannot decode the outer RLP item"
   let block ← block_blt.toExStrBlock
+  let canonicalRlp := block.toBLT.toB8L
+  if rlp ≠ canonicalRlp then
+    .error
+      s!"{rlpRoundTripTag} : decoded block does not re-encode byte-for-byte"
   .ok ⟨block, (Header.toBLT block.header).toB8L.keccak⟩
+
+--------------- STRICT BLOCK/LEGACY DECODER REGRESSION CHECKS ---------------
+
+private def withdrawalDecoderVector
+    (globalIndex validatorIndex recipient amount : B8L) : BLT :=
+  .list [.b8s globalIndex, .b8s validatorIndex, .b8s recipient, .b8s amount]
+
+private def legacyDecoderVector
+    (nonce gasPrice gas receiver value v r s : B8L) : BLT :=
+  .list [
+    .b8s nonce, .b8s gasPrice, .b8s gas, .b8s receiver, .b8s value,
+    .b8s [], .b8s v, .b8s r, .b8s s
+  ]
+
+private def nineByteScalar : B8L := 0x01 :: List.replicate 8 0x00
+private def thirtyThreeByteScalar : B8L := 0x01 :: List.replicate 32 0x00
+private def testRecipient : B8L := List.replicate 20 0x11
+
+-- Both withdrawal index positions reject nine bytes at the field boundary;
+-- neither can reach the truncating `B8L.toB64` conversion unchecked.
+#guard hasTag rlpFieldOverflow64Tag <|
+  BLT.toExStrWithdrawal <|
+    withdrawalDecoderVector nineByteScalar [] testRecipient []
+#guard hasTag rlpFieldOverflow64Tag <|
+  BLT.toExStrWithdrawal <|
+    withdrawalDecoderVector [] nineByteScalar testRecipient []
+#guard (BLT.toExStrWithdrawal <|
+  withdrawalDecoderVector [] [] testRecipient []).toOption.isSome
+#guard hasTag rlpFixedWidthTag <|
+  BLT.toExStrWithdrawal <|
+    withdrawalDecoderVector [] [] (List.replicate 21 0x11) []
+#guard hasTag rlpFieldOverflow256Tag <|
+  BLT.toExStrWithdrawal <|
+    withdrawalDecoderVector [] [] testRecipient thirtyThreeByteScalar
+
+-- A canonical legacy transaction preserves its signing/re-encoding bytes.
+private def canonicalLegacyVector : BLT :=
+  legacyDecoderVector [0x01] [0x02] [0x52, 0x08] testRecipient [] [0x1b] [0x01] [0x02]
+
+#guard
+  (BLT.toExStrTx canonicalLegacyVector).toOption.map (fun tx => tx.toBLT.toB8L)
+    == some canonicalLegacyVector.toB8L
+
+-- Every legacy scalar is bounded before conversion or sender recovery.
+#guard hasTag rlpFieldOverflow64Tag <|
+  BLT.toExStrTx <|
+    legacyDecoderVector nineByteScalar [] [] [] [] [] [] []
+#guard hasTag rlpFieldOverflow256Tag <|
+  BLT.toExStrTx <|
+    legacyDecoderVector [] thirtyThreeByteScalar [] [] [] [] [] []
+#guard hasTag rlpFieldOverflow256Tag <|
+  BLT.toExStrTx <|
+    legacyDecoderVector [] [] thirtyThreeByteScalar [] [] [] [] []
+#guard hasTag rlpFieldOverflow256Tag <|
+  BLT.toExStrTx <|
+    legacyDecoderVector [] [] [] [] thirtyThreeByteScalar [] [] []
+#guard hasTag rlpFieldOverflow256Tag <|
+  BLT.toExStrTx <|
+    legacyDecoderVector [] [] [] [] [] thirtyThreeByteScalar [] []
+#guard hasTag rlpFieldOverflow256Tag <|
+  BLT.toExStrTx <|
+    legacyDecoderVector [] [] [] [] [] [] thirtyThreeByteScalar []
+#guard hasTag rlpFieldOverflow256Tag <|
+  BLT.toExStrTx <|
+    legacyDecoderVector [] [] [] [] [] [] [] thirtyThreeByteScalar
+#guard hasTag rlpFixedWidthTag <|
+  BLT.toExStrTx <|
+    legacyDecoderVector [] [] [] (List.replicate 21 0x11) [] [] [] []
+
+-- The two block-list failures with dedicated meanings are separated before
+-- header decoding; arbitrary non-list input remains a structure error.
+#guard hasTag rlpWithdrawalsNotReadTag <|
+  BLT.toExStrBlock (.list [.b8s [], .list [], .list []])
+#guard hasTag rlpStructureTag <| BLT.toExStrBlock (.b8s [])
 
 def addBlockToChain (chain : BlockChain) (blockRlp : B8L) :
   Except String (BlockChain ⊕ String) := do
@@ -5565,9 +5680,6 @@ def addBlockToChain (chain : BlockChain) (blockRlp : B8L) :
   cprint s!"{chain.state}"
   if (Header.toBLT block.header).toB8L.keccak ≠ blockHeaderHash then do
     .error "ERROR : incorrect block header hash"
-  let rlp' := block.toBLT.toB8L
-  if blockRlp ≠ rlp' then do
-    .error "ERROR : incorrect block rlp"
   let chain ←
     match stateTransition chain block with
     | .error err => return (.inr err)
