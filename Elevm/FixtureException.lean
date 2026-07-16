@@ -205,13 +205,13 @@ def classifyWith (routes : List ActualRoute) (err : String) : Option FixtureExce
 /-- The routes from ELeVM's actual errors to canonical identities.
 
 Registering a route is a claim that a specific producer raises a specific
-official identity. The header and post-transition producers are now precise
-enough for that claim: each rejection reason in `blockExceptionTags` is raised
-at exactly one site, so each maps to one identity. The transaction identities
-are still routed by later work. The three RLP identities are exact here: a
-64-bit scalar overflow has its own route, omission of the post-Shanghai
-withdrawals component has its own route, and the remaining strict
-structural/canonical encoding failures route to structures encoding.
+official identity. The header, post-transition, transaction-validation and RLP
+producers are now precise enough for that claim. In particular, nonce direction,
+intrinsic gas, the 256-bit gas-price product, and each type-3 rule have distinct
+tags rather than sharing a broad `InvalidTransaction` string. The three RLP
+identities are exact here: a 64-bit scalar overflow has its own route, omission
+of the post-Shanghai withdrawals component has its own route, and the remaining
+strict structural/canonical encoding failures route to structures encoding.
 
 Four block tags are deliberately absent, and their absence is the fail-closed
 choice rather than an oversight: `headerNonceTag`, `excessBlobGasTag`,
@@ -243,7 +243,22 @@ def actualRoutes : List ActualRoute :=
     (rlpFixedWidthTag, blockRlpStructuresEncoding),
     (rlpFieldOverflow256Tag, blockRlpStructuresEncoding),
     (rlpLeadingZerosTag, blockRlpStructuresEncoding),
-    (rlpRoundTripTag, blockRlpStructuresEncoding) ]
+    (rlpRoundTripTag, blockRlpStructuresEncoding),
+    (gasPriceProductOverflowTag, txGasLimitPriceProductOverflow),
+    (gasAllowanceExceededTag, txGasAllowanceExceeded),
+    (initcodeSizeExceededTag, txInitcodeSizeExceeded),
+    (insufficientAccountFundsTag, txInsufficientAccountFunds),
+    (insufficientMaxFeePerGasTag, txInsufficientMaxFeePerGas),
+    (intrinsicGasTooLowTag, txIntrinsicGasTooLow),
+    (nonceIsMaxTag, txNonceIsMax),
+    (nonceMismatchTooHighTag, txNonceMismatchTooHigh),
+    (nonceMismatchTooLowTag, txNonceMismatchTooLow),
+    (priorityGreaterThanMaxFeeTag, txPriorityGreaterThanMaxFeePerGas),
+    (senderNotEoaTag, txSenderNotEoa),
+    (type3BlobCountExceededTag, txType3TxBlobCountExceeded),
+    (type3ContractCreationTag, txType3TxContractCreation),
+    (type3InvalidBlobVersionedHashTag, txType3TxInvalidBlobVersionedHash),
+    (type3ZeroBlobsTag, txType3TxZeroBlobs) ]
 
 /-- The block tags with no fixture identity, listed so the coverage checks can
 assert that every block tag is either routed or knowingly unrouted. -/
@@ -463,10 +478,12 @@ private def sampleRoutes : List ActualRoute :=
 #guard (classifyWith sampleRoutes "DecodingError : unexpected list length").isNone
 #guard (classifyWith sampleRoutes "EncodingError").isNone
 
--- The real route table: the block and strict-RLP halves are now registered,
--- while the transaction half is not. `classify` still recognizes nothing it
+-- The real route table is complete, but `classify` still recognizes nothing it
 -- has not been told about.
 #guard (classify "InvalidBlock").isNone
+#guard (classify "InvalidTransaction").isNone
+#guard (classify "InvalidTransaction : some detail").isNone
+#guard (classify "RlpError : arbitrary malformed input").isNone
 #guard (classify "InvalidGasLimitAbsolute").isNone
 
 -- Each route key is a real producer tag and is registered once. Several
@@ -478,14 +495,36 @@ def routedRlpTags : List String :=
     rlpFixedWidthTag, rlpFieldOverflow256Tag, rlpLeadingZerosTag,
     rlpRoundTripTag ]
 
-#guard actualRoutes.length = 24
-#guard (actualRoutes.map Prod.fst).eraseDups.length = 24
-#guard (actualRoutes.map Prod.snd).eraseDups.length = 20
+#guard actualRoutes.length = 39
+#guard (actualRoutes.map Prod.fst).eraseDups.length = 39
+#guard (actualRoutes.map Prod.snd).eraseDups.length = 35
 #guard actualRoutes.all fun r =>
-  blockExceptionTags.contains r.fst || routedRlpTags.contains r.fst
+  blockExceptionTags.contains r.fst || routedRlpTags.contains r.fst ||
+    transactionExceptionTags.contains r.fst
 #guard routedRlpTags.length = 7
 #guard routedRlpTags.eraseDups.length = 7
 #guard routedRlpTags.all fun t => (actualRoutes.map Prod.fst).contains t
+#guard transactionExceptionTags.length = 15
+#guard transactionExceptionTags.eraseDups.length = 15
+#guard transactionExceptionTags.all fun t => (actualRoutes.map Prod.fst).contains t
+
+-- Coverage in the fixture-to-producer direction: every one of the 35
+-- identities generated from the Prague corpus has at least one actual route.
+-- A newly observed expected identity therefore cannot silently remain
+-- unclassifiable.
+#guard all.all fun e => actualRoutes.any fun r => r.snd == e
+
+-- Coverage in the producer-to-fixture direction: each registered actual prefix
+-- occurs once and classifies to exactly its declared identity, both bare and
+-- with detail after the fixed delimiter.
+#guard actualRoutes.all fun r =>
+  (actualRoutes.filter fun r' => hasErrorType r.fst r'.fst).length = 1
+#guard actualRoutes.all fun r =>
+  (actualRoutes.filter fun r' =>
+    hasErrorType s!"{r.fst} : producer detail" r'.fst).length = 1
+#guard actualRoutes.all fun r =>
+  classify r.fst == some r.snd &&
+    classify s!"{r.fst} : producer detail" == some r.snd
 
 -- Every block tag is either routed or knowingly unrouted -- a new rejection
 -- reason cannot be added without landing in one list or the other.
@@ -511,6 +550,23 @@ def routedRlpTags : List String :=
   == some blockImportImpossibleDifficultyOverParis
 #guard classify s!"{stateRootTag} : detail" == some blockInvalidStateRoot
 
+-- Every transaction producer reaches its exact official identity. The full
+-- route-table checks above cover all fifteen; these representatives pin the
+-- distinctions that previously shared broad strings.
+#guard classify s!"{intrinsicGasTooLowTag} : detail" == some txIntrinsicGasTooLow
+#guard classify s!"{nonceIsMaxTag} : detail" == some txNonceIsMax
+#guard classify s!"{nonceMismatchTooLowTag} : detail" == some txNonceMismatchTooLow
+#guard classify s!"{nonceMismatchTooHighTag} : detail" == some txNonceMismatchTooHigh
+#guard classify s!"{gasPriceProductOverflowTag} : detail"
+  == some txGasLimitPriceProductOverflow
+#guard classify s!"{type3ZeroBlobsTag} : detail" == some txType3TxZeroBlobs
+#guard classify s!"{type3BlobCountExceededTag} : detail"
+  == some txType3TxBlobCountExceeded
+#guard classify s!"{type3ContractCreationTag} : detail"
+  == some txType3TxContractCreation
+#guard classify s!"{type3InvalidBlobVersionedHashTag} : detail"
+  == some txType3TxInvalidBlobVersionedHash
+
 -- The pairs the fixtures insist are different reasons really do land on
 -- different identities. These are the distinctions the whole step exists for:
 -- an out-of-range gas limit is not a gas limit that drifted from its parent,
@@ -519,6 +575,8 @@ def routedRlpTags : List String :=
 #guard classify gasLimitTooBigTag != classify gasLimitAdjustmentTag
 #guard classify gasUsedOverflowTag != classify gasUsedMismatchTag
 #guard classify unknownParentTag != classify unknownParentZeroTag
+#guard classify nonceMismatchTooLowTag != classify nonceMismatchTooHighTag
+#guard classify intrinsicGasTooLowTag != classify gasAllowanceExceededTag
 
 -- The knowingly unrouted rules classify to nothing, so a block rejected for one
 -- of them fails loudly instead of borrowing a neighbouring identity.

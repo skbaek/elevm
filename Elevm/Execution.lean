@@ -876,22 +876,51 @@ abbrev isExceptionalHalt (err : String) : Prop :=
     "KZGProofError"
   ] (hasErrorType err)
 
+---------------- TRANSACTION-REJECTION REASONS -----------------
+
+-- These tags are the transaction analogue of `blockExceptionTags` below:
+-- one producer reason per official fixture identity.  Keeping nonce direction,
+-- intrinsic gas, and the 256-bit gas-price product distinct is essential: the
+-- fixtures name them separately, so a broad `InvalidTransaction` string cannot
+-- classify them faithfully.
+
+def gasPriceProductOverflowTag : String := "GasPriceProductOverflowError"
+def gasAllowanceExceededTag : String := "GasAllowanceExceededError"
+def initcodeSizeExceededTag : String := "InitcodeSizeExceededError"
+def insufficientAccountFundsTag : String := "InsufficientAccountFundsError"
+def insufficientMaxFeePerGasTag : String := "InsufficientMaxFeePerGasError"
+def intrinsicGasTooLowTag : String := "IntrinsicGasTooLowError"
+def nonceIsMaxTag : String := "NonceIsMaxError"
+def nonceMismatchTooHighTag : String := "NonceMismatchTooHighError"
+def nonceMismatchTooLowTag : String := "NonceMismatchTooLowError"
+def priorityGreaterThanMaxFeeTag : String := "PriorityGreaterThanMaxFeeError"
+def senderNotEoaTag : String := "SenderNotEoaError"
+def type3BlobCountExceededTag : String := "Type3BlobCountExceededError"
+def type3ContractCreationTag : String := "Type3ContractCreationError"
+def type3InvalidBlobVersionedHashTag : String :=
+  "Type3InvalidBlobVersionedHashError"
+def type3ZeroBlobsTag : String := "Type3ZeroBlobsError"
+
+def transactionExceptionTags : List String :=
+  [ gasPriceProductOverflowTag, gasAllowanceExceededTag,
+    initcodeSizeExceededTag, insufficientAccountFundsTag,
+    insufficientMaxFeePerGasTag, intrinsicGasTooLowTag, nonceIsMaxTag,
+    nonceMismatchTooHighTag, nonceMismatchTooLowTag,
+    priorityGreaterThanMaxFeeTag, senderNotEoaTag,
+    type3BlobCountExceededTag, type3ContractCreationTag,
+    type3InvalidBlobVersionedHashTag, type3ZeroBlobsTag ]
+
+#guard transactionExceptionTags.length = 15
+#guard transactionExceptionTags.eraseDups.length = 15
+#guard transactionExceptionTags.all fun t =>
+  (transactionExceptionTags.filter fun u => t.isPrefixOf u).length = 1
+
 def isInvalidTransaction (err : String) : Bool :=
+  List.any transactionExceptionTags (hasErrorType err) ||
   List.any [
-    "InvalidTransaction",
-    "InsufficientBalanceError",
-    "NonceMismatchError",
-    "GasUsedExceedsLimitError",
-    "InvalidSenderError",
-    "BlobGasLimitExceededError",
-    "NoBlobDataError",
     "InvalidSignatureError",
     "TransactionTypeError",
-    "TransactionTypeContractCreationError",
     "InsufficientMaxFeePerBlobGasError",
-    "InsufficientMaxFeePerGasError",
-    "InvalidBlobVersionedHashError",
-    "PriorityFeeGreaterThanMaxFeeError",
     "EmptyAuthorizationListError"
   ] (hasErrorType err)
 
@@ -1029,9 +1058,8 @@ def isRlpException (err : String) : Bool :=
 -- because the official fixture identities are separate -- a scalar wider than
 -- 64 bits is `RLP_INVALID_FIELD_OVERFLOW_64`, a wrong list shape is
 -- `RLP_STRUCTURES_ENCODING` -- so one generic `"DecodingError"` covering both
--- cannot be classified. Nothing routes these tags to identities yet; wiring
--- the header, withdrawal, and transaction decoders through them, and mapping
--- the tags, is later work.
+-- cannot be classified. `Elevm/FixtureException.lean` routes these exact tags;
+-- adding a new decoder rejection therefore requires an explicit route there.
 
 /-- An RLP item is not the list/string structure the field requires. -/
 def rlpStructureTag : String := "RlpStructureError"
@@ -4672,11 +4700,15 @@ def checkTransactionGasLimits
   let gasAvailable := benv.stat.blockGasLimit - blockOut.blockGasUsed
   let blobGasAvailable := maxBlobGasPerBlock - blockOut.blobGasUsed
   if tx.gas > gasAvailable then
-    .error "GasUsedExceedsLimitError : gas used exceeds limit"
+    .error
+      s!"{gasAllowanceExceededTag} : transaction gas = {tx.gas} > \
+         block gas available = {gasAvailable}"
   else
     let txBlobGasUsed := calculateTotalBlobGas tx
     if txBlobGasUsed > blobGasAvailable then
-      .error s!"BlobGasLimitExceededError : blob gas used = {txBlobGasUsed}, blob gas available = {blobGasAvailable}"
+      .error
+        s!"{type3BlobCountExceededTag} : blob gas used = {txBlobGasUsed} > \
+           blob gas available = {blobGasAvailable}"
     else
       .ok txBlobGasUsed
 
@@ -4684,20 +4716,38 @@ def checkTransactionDynamicGasFee
     (baseFeePerGas gas maxPriorityFee maxFee : Nat) :
     Except String (Nat × Nat) :=
   if maxFee < maxPriorityFee then
-    .error "PriorityFeeGreaterThanMaxFeeError : priority fee greater than max fee"
+    .error
+      s!"{priorityGreaterThanMaxFeeTag} : priority fee = {maxPriorityFee} > \
+         max fee = {maxFee}"
   else if maxFee < baseFeePerGas then
-    .error "InsufficientMaxFeePerGasError"
+    .error
+      s!"{insufficientMaxFeePerGasTag} : max fee = {maxFee} < \
+         base fee = {baseFeePerGas}"
   else
-    let priorityFeePerGas := min maxPriorityFee (maxFee - baseFeePerGas)
-    .ok ⟨priorityFeePerGas + baseFeePerGas, gas * maxFee⟩
+    let maxGasFee := gas * maxFee
+    if maxGasFee > B256.max.toNat then
+      .error
+        s!"{gasPriceProductOverflowTag} : gas * max fee = {maxGasFee} > \
+           2^256 - 1"
+    else
+      let priorityFeePerGas := min maxPriorityFee (maxFee - baseFeePerGas)
+      .ok ⟨priorityFeePerGas + baseFeePerGas, maxGasFee⟩
 
 def checkTransactionLegacyGasFee
     (baseFeePerGas gas gasPrice : Nat) :
     Except String (Nat × Nat) :=
   if gasPrice < baseFeePerGas then
-    .error "InvalidBlock : gas price below base fee"
+    .error
+      s!"{insufficientMaxFeePerGasTag} : gas price = {gasPrice} < \
+         base fee = {baseFeePerGas}"
   else
-    .ok ⟨gasPrice, gas * gasPrice⟩
+    let maxGasFee := gas * gasPrice
+    if maxGasFee > B256.max.toNat then
+      .error
+        s!"{gasPriceProductOverflowTag} : gas * gas price = {maxGasFee} > \
+           2^256 - 1"
+    else
+      .ok ⟨gasPrice, maxGasFee⟩
 
 def checkTransactionGasFee (benv : Benv) (tx : Tx) :
     Except String (Nat × Nat) :=
@@ -4722,9 +4772,11 @@ def checkTransactionBlobData
   match tx.type with
   | .three _ _ _ _ _ maxBlobFee blobHashes =>
     if blobHashes.isEmpty then
-      .error "NoBlobDataError : no blob data in transaction"
+      .error s!"{type3ZeroBlobsTag} : no blob hashes in type-3 transaction"
     else if List.any blobHashes (λ bvh => bvh.toB8L[0]! ≠ versionedHashVersionKzg) then
-      .error "InvalidBlobVersionedHashError : invalid blob versioned hash"
+      .error
+        s!"{type3InvalidBlobVersionedHashTag} : a blob versioned hash has \
+           a version byte other than {versionedHashVersionKzg}"
     else
       let blobGasPrice := calculate_blob_gas_price benv.stat.excessBlobGas
       if maxBlobFee < blobGasPrice then
@@ -4734,9 +4786,10 @@ def checkTransactionBlobData
   | _ => .ok ⟨maxGasFee, []⟩
 
 def checkTransactionReceiver (tx : Tx) : Except String Unit :=
-  if tx.isTypeThree ∨ tx.isTypeFour then
+  if tx.isTypeThree then
     if tx.type.receiver?.isNone then
-      .error "TransactionTypeContractCreationError : receiver is none for type 3 or 4 tx"
+      .error
+        s!"{type3ContractCreationTag} : type-3 transactions cannot create contracts"
     else
       .ok ()
   else
@@ -4751,7 +4804,7 @@ def checkTransactionAuthorizationList (tx : Tx) : Except String Unit :=
 def checkTransactionSenderCode (senderAccount : Acct) :
     Except String Unit :=
   if ¬ (senderAccount.code.isEmpty ∨ isValidDelegation senderAccount.code) then
-    .error "InvalidSenderError : not EOA"
+    .error s!"{senderNotEoaTag} : sender has non-delegation code"
   else
     .ok ()
 
@@ -4759,11 +4812,18 @@ def checkTransactionSenderAccount
     (senderAccount : Acct) (tx : Tx) (maxGasFee : Nat) :
     Except String Unit :=
   if senderAccount.nonce > tx.nonce then
-    .error "NonceMismatchError : nonce too low"
+    .error
+      s!"{nonceMismatchTooLowTag} : transaction nonce = {tx.nonce.toNat} < \
+         sender nonce = {senderAccount.nonce.toNat}"
   else if senderAccount.nonce < tx.nonce then
-    .error "NonceMismatchError : nonce too high"
+    .error
+      s!"{nonceMismatchTooHighTag} : transaction nonce = {tx.nonce.toNat} > \
+         sender nonce = {senderAccount.nonce.toNat}"
   else if senderAccount.bal.toNat < maxGasFee + tx.value then
-    .error s!"InsufficientBalanceError : sender balance ({senderAccount.bal.toNat}) < max gas fee ({maxGasFee}) + tx value ({tx.value})"
+    .error
+      s!"{insufficientAccountFundsTag} : sender balance = \
+         {senderAccount.bal.toNat} < max gas fee = {maxGasFee} + \
+         transaction value = {tx.value}"
   else
     checkTransactionSenderCode senderAccount
 
@@ -4818,15 +4878,27 @@ def calculateIntrinsicCost (tx: Tx) : Nat × Nat :=
     callDataFloorGasCost
   ⟩
 
+def checkInitcodeSize (receiver : Option Adr) (dataLength : Nat) :
+    Except String Unit :=
+  if receiver.isNone && dataLength > maxInitCodeSize then
+    .error
+      s!"{initcodeSizeExceededTag} : initcode is {dataLength} bytes, \
+         exceeding the {maxInitCodeSize}-byte maximum"
+  else
+    .ok ()
+
 -- validate_transaction
 def validateTransaction (tx : Tx) : Except String (Nat × Nat) := do
   let ⟨intrinsicGas, callDataFloorGasCost⟩ := calculateIntrinsicCost tx
   if max intrinsicGas callDataFloorGasCost > tx.gas
-    then .error "InvalidTransaction : Insufficient gas"
+    then
+      .error
+        s!"{intrinsicGasTooLowTag} : transaction gas = {tx.gas} < \
+           max intrinsic/calldata floor cost = \
+           {max intrinsicGas callDataFloorGasCost}"
   if tx.nonce = B64.max
-    then .error "InvalidTransaction : Nonce too high"
-  if tx.type.receiver?.isNone && tx.data.length > maxInitCodeSize
-    then .error "InvalidTransaction : Code size too large"
+    then .error s!"{nonceIsMaxTag} : transaction nonce is 2^64 - 1"
+  checkInitcodeSize tx.type.receiver? tx.data.length
   .ok ⟨intrinsicGas, callDataFloorGasCost⟩
 
 def prepareMessage (benv: Benv) (tenv: Tenv) (tx: Tx) :
@@ -4927,6 +4999,88 @@ def BlockOutput.init : BlockOutput :=
     blobGasUsed := 0
     requests := []
   }
+
+---------------- TRANSACTION-REJECTION REGRESSION CHECKS ----------------
+
+-- These checks exercise the real producer functions, not merely the fixture
+-- classifier.  They pin the validation order and the distinctions that used
+-- to be hidden behind `InvalidTransaction` and `NonceMismatchError`.
+
+private def fixtureTestTx : Tx :=
+  {
+    nonce := 0
+    gas := txBaseCost
+    value := 0
+    data := []
+    v := 27
+    r := []
+    s := []
+    type := .zero 10 (some 0)
+  }
+
+private def fixtureTestBenv (blockGasLimit : Nat := 10000000) : Benv :=
+  {
+    state := .empty
+    createdAccounts := .emptyWithCapacity
+    stat := {
+      chainId := 1
+      origState := .empty
+      blockGasLimit := blockGasLimit
+      blockHashes := []
+      coinbase := 0
+      number := 1
+      baseFeePerGas := 1
+      time := 0
+      prevRandao := 0
+      excessBlobGas := 0
+      parentBeaconBlockRoot := 0
+    }
+  }
+
+private def fixtureTestAccount
+    (nonce : B64) (bal : B256) (code : ByteArray := .empty) : Acct :=
+  { nonce := nonce, bal := bal, stor := .empty, code := code }
+
+#guard hasTag intrinsicGasTooLowTag <|
+  validateTransaction {fixtureTestTx with gas := txBaseCost - 1}
+#guard hasTag nonceIsMaxTag <|
+  validateTransaction {fixtureTestTx with nonce := B64.max}
+#guard hasTag initcodeSizeExceededTag <|
+  checkInitcodeSize none (maxInitCodeSize + 1)
+
+#guard hasTag priorityGreaterThanMaxFeeTag <|
+  checkTransactionDynamicGasFee 1 1 2 1
+#guard hasTag insufficientMaxFeePerGasTag <|
+  checkTransactionDynamicGasFee 2 1 1 1
+#guard hasTag gasPriceProductOverflowTag <|
+  checkTransactionDynamicGasFee 0 2 0 (2 ^ 255)
+#guard hasTag gasPriceProductOverflowTag <|
+  checkTransactionLegacyGasFee 0 2 (2 ^ 255)
+
+#guard hasTag gasAllowanceExceededTag <|
+  checkTransactionGasLimits (fixtureTestBenv txBaseCost) .init
+    {fixtureTestTx with gas := txBaseCost + 1}
+#guard hasTag type3BlobCountExceededTag <|
+  checkTransactionGasLimits fixtureTestBenv .init
+    { fixtureTestTx with
+      type := .three 1 1 10 0 [] 1 (List.replicate 10 0) }
+#guard hasTag type3ZeroBlobsTag <|
+  checkTransactionBlobData fixtureTestBenv
+    {fixtureTestTx with type := .three 1 1 10 0 [] 1 []} 10
+#guard hasTag type3InvalidBlobVersionedHashTag <|
+  checkTransactionBlobData fixtureTestBenv
+    {fixtureTestTx with type := .three 1 1 10 0 [] 1 [0]} 10
+
+#guard hasTag nonceMismatchTooLowTag <|
+  checkTransactionSenderAccount (fixtureTestAccount 2 100) fixtureTestTx 0
+#guard hasTag nonceMismatchTooHighTag <|
+  checkTransactionSenderAccount (fixtureTestAccount 0 100)
+    {fixtureTestTx with nonce := 1} 0
+#guard hasTag insufficientAccountFundsTag <|
+  checkTransactionSenderAccount (fixtureTestAccount 0 0) fixtureTestTx 1
+#guard hasTag senderNotEoaTag <|
+  checkTransactionSenderAccount
+    (fixtureTestAccount 0 100 (ByteArray.mk #[0x01])) fixtureTestTx 0
 
 
 -- process_transaction
@@ -5195,7 +5349,12 @@ def B8L.toExStrTx : B8L → Except String Tx
       let gas ← gas.toRlpNat "type-3 transaction gas" 32
       -- A type-3 receiver is a mandatory address at the RLP level; the
       -- semantic contract-creation rejection downstream remains as defense
-      -- in depth for transactions that arrive already decoded.
+      -- in depth for transactions that arrive already decoded.  Empty is the
+      -- official type-3 contract-creation failure, while a nonempty value of
+      -- any width other than twenty bytes remains an RLP shape failure.
+      if receiver.isEmpty then
+        .error
+          s!"{type3ContractCreationTag} : type-3 transaction receiver is empty"
       let receiver ← receiver.toRlpAdr "type-3 transaction receiver"
       let value ← value.toRlpNat "type-3 transaction value" 32
       let accessList ← accessList.toExStrAccessList
@@ -5542,7 +5701,9 @@ def getWithdrawalsRoot (bout : BlockOutput) : B256 :=
 
 def stateTransitionOmmersCheck (ommers : List Header) : Except String Unit := do
   if ¬ommers.isEmpty then do
-    .error "InvalidBlock"
+    .error
+      s!"{ommersOverParisTag} : block body contains {ommers.length} ommer(s), \
+         which is impossible after Paris"
 
 def appendBlock (blks : List Block) (blk : Block) : List Block :=
   (blk :: blks.reverse.take 254).reverse
@@ -5823,9 +5984,12 @@ private def shortWidthScalar : B8L := 0x01 :: List.replicate 30 0x00
 
 -- A type-1/type-2 receiver may be empty, meaning contract creation...
 #guard (B8L.toExStrTx (type2Vector [0x0a] [] [0x02])).toOption.isSome
--- ...but a type-3 receiver may not, and 19/21-byte receivers fail everywhere.
-#guard hasTag rlpFixedWidthTag <|
+-- ...but an empty type-3 receiver is the semantic contract-creation identity;
+-- nonempty 19/21-byte receivers still fail as malformed RLP fields.
+#guard hasTag type3ContractCreationTag <|
   B8L.toExStrTx <| type3Vector [0x01] [] testBlobHash
+#guard hasTag rlpFixedWidthTag <|
+  B8L.toExStrTx <| type3Vector [0x01] (List.replicate 19 0x11) testBlobHash
 #guard hasTag rlpFixedWidthTag <| B8L.toExStrTx <|
   type1Vector [0x01] [0x01] (List.replicate 21 0x11) [0x01] (.list [])
 #guard hasTag rlpFixedWidthTag <|
