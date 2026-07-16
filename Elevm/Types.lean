@@ -977,12 +977,19 @@ def Acct.toStrings (s : String) (a : Acct) : List String :=
   ]
 
 instance : ToString Acct := ⟨fun a => String.joinln (Acct.toStrings "account" a)⟩
+-- An address is exactly twenty bytes. The trailing `[]` is load-bearing: a
+-- twenty-one-byte list is a malformed address, not an address with a tail to
+-- ignore. Accepting the prefix let an overlong RLP field survive decoding and
+-- be rejected later, if at all, for the wrong reason (finding 3.6). Every
+-- caller already supplies exactly twenty bytes -- `ByteArray.sliceD _ 20`, the
+-- low twenty bytes of a keccak hash, or a checked consensus field -- so the
+-- rejection is new only for untrusted input.
 def B8L.toAdr? : B8L → Option Adr
   | x0 :: x1 :: x2 :: x3 ::
     y0 :: y1 :: y2 :: y3 ::
     y4 :: y5 :: y6 :: y7 ::
     z0 :: z1 :: z2 :: z3 ::
-    z4 :: z5 :: z6 :: z7 :: _ =>
+    z4 :: z5 :: z6 :: z7 :: [] =>
     some ⟨
       B8s.toB32 x0 x1 x2 x3,
       B8s.toB64 y0 y1 y2 y3 y4 y5 y6 y7,
@@ -991,6 +998,117 @@ def B8L.toAdr? : B8L → Option Adr
   | _ => none
 
 def Hex.toAdr? (hx : String) : Option Adr := Hex.toB8L hx >>= B8L.toAdr?
+
+------------------- STRICT CONSENSUS-FIELD DECODING --------------------
+
+-- RLP bytes are untrusted consensus input, so a field's *shape* must be
+-- checked before its value is converted, never after. The conversions
+-- themselves (`B8L.toB64`, `B8L.toB256`) pad or truncate to a fixed width
+-- through `B8L.pack`, which silently turns a nine-byte withdrawal index into a
+-- plausible eight-byte one; the encode-and-compare round trip then reports the
+-- corruption as a generic RLP mismatch, long after the value was lost.
+--
+-- The helpers below are the pure shape checks, one per shape the consensus
+-- fields actually have. They are deliberately value-level and error-free:
+-- `Elevm/Execution.lean` wraps each one with the tagged error naming the
+-- precise reason, which is what a fixture exception identity is mapped from.
+
+/-- A fixed-width field: the length must equal `n` exactly. -/
+def B8L.toFixed? (n : Nat) (xs : B8L) : Option B8L :=
+  if xs.length = n then some xs else none
+
+/-- Is this a canonical unsigned scalar of at most `n` bytes?
+
+Two independent conditions, both required by RLP: the width must fit, and the
+encoding must be canonical -- zero is the empty byte string, and a nonempty
+scalar never begins with a zero byte. `Execution.lean` distinguishes the two
+failures, since only one of them is a field-overflow. -/
+def B8L.isCanonicalScalar (n : Nat) (xs : B8L) : Bool :=
+  (xs.length ≤ n) && (xs.head? != some (0 : B8))
+
+/-- A canonical unsigned scalar of at most `n` bytes, as a `Nat`. -/
+def B8L.toScalarNat? (n : Nat) (xs : B8L) : Option Nat :=
+  if xs.isCanonicalScalar n then some xs.toNat else none
+
+/-- A canonical 64-bit scalar: at most eight bytes, hence converted without
+truncation. Note this is *not* `B8L.toB64?`, which demands exactly eight bytes
+and so rejects every valid small integer. -/
+def B8L.toScalarB64? (xs : B8L) : Option B64 :=
+  if xs.isCanonicalScalar 8 then some xs.toB64 else none
+
+/-- A canonical 256-bit scalar: at most thirty-two bytes, hence converted
+without truncation. -/
+def B8L.toScalarB256? (xs : B8L) : Option B256 :=
+  if xs.isCanonicalScalar 32 then some xs.toB256 else none
+
+/-- An optional contract-creation receiver: either empty, meaning creation, or
+exactly twenty bytes. Anything else is malformed rather than a creation. -/
+def B8L.toReceiver? : B8L → Option (Option Adr)
+  | [] => some none
+  | xs => xs.toAdr?.map some
+
+--------------- STRICT-SHAPE BOUNDARY CHECKS ----------------
+
+-- Boundaries at 0, 1, n, and n+1 bytes for each shape, plus canonicality, plus
+-- the 19/20/21-byte address cases.
+
+-- Fixed width: only the exact length is accepted, on both sides.
+#guard (B8L.toFixed? 0 []).isSome
+#guard (B8L.toFixed? 0 [0x00]).isNone
+#guard (B8L.toFixed? 4 [0x01, 0x02, 0x03]).isNone                    -- n-1
+#guard (B8L.toFixed? 4 [0x01, 0x02, 0x03, 0x04]).isSome              -- n
+#guard (B8L.toFixed? 4 [0x01, 0x02, 0x03, 0x04, 0x05]).isNone        -- n+1
+-- A fixed-width field is bytes, not a number: leading zeroes are content.
+#guard (B8L.toFixed? 4 [0x00, 0x00, 0x00, 0x00]).isSome
+
+-- Canonical scalars: the empty string is zero, a leading zero byte is not.
+#guard B8L.toScalarNat? 8 [] = some 0                                -- 0 bytes
+#guard B8L.toScalarNat? 8 [0x01] = some 1                            -- 1 byte
+#guard B8L.toScalarNat? 8 (List.replicate 8 (0xFF : B8)) = some (2 ^ 64 - 1)
+#guard (B8L.toScalarNat? 8 (List.replicate 9 (0xFF : B8))).isNone    -- n+1
+#guard (B8L.toScalarNat? 8 [0x00]).isNone                            -- zero, not empty
+#guard (B8L.toScalarNat? 8 [0x00, 0x01]).isNone                      -- leading zero
+#guard B8L.toScalarNat? 8 [0x01, 0x00] = some 256                    -- trailing zero is fine
+
+-- 64-bit scalars convert every accepted width without truncating.
+#guard (B8L.toScalarB64? []).map B64.toNat = some 0
+#guard (B8L.toScalarB64? [0x01]).map B64.toNat = some 1
+#guard (B8L.toScalarB64? [0x01, 0x00]).map B64.toNat = some 256
+#guard (B8L.toScalarB64? (List.replicate 8 (0xFF : B8))).map B64.toNat
+  = some (2 ^ 64 - 1)                                                -- n
+#guard (B8L.toScalarB64? (0x01 :: List.replicate 8 (0x00 : B8))).isNone  -- n+1
+-- The nine-byte withdrawal-index case: rejected outright, and emphatically not
+-- accepted as the eight-byte value `B8L.toB64` would have truncated it to.
+#guard (B8L.toB64 (0x01 :: List.replicate 8 (0x00 : B8))).toNat = 0
+#guard (B8L.toScalarB64? [0x00]).isNone
+
+-- 256-bit scalars, same shape one width up.
+#guard (B8L.toScalarB256? []).map B256.toNat = some 0
+#guard (B8L.toScalarB256? [0x01]).map B256.toNat = some 1
+#guard (B8L.toScalarB256? (List.replicate 32 (0xFF : B8))).map B256.toNat
+  = some (2 ^ 256 - 1)                                               -- n
+#guard (B8L.toScalarB256? (List.replicate 33 (0xFF : B8))).isNone     -- n+1
+#guard (B8L.toScalarB256? [0x00, 0x01]).isNone
+
+-- Addresses: exactly twenty bytes, with 19 and 21 both rejected.
+#guard (B8L.toAdr? (List.replicate 19 (0x11 : B8))).isNone
+#guard (B8L.toAdr? (List.replicate 20 (0x11 : B8))).isSome
+#guard (B8L.toAdr? (List.replicate 21 (0x11 : B8))).isNone
+#guard (B8L.toAdr? []).isNone
+-- The twenty accepted bytes are the address, in order.
+#guard (B8L.toAdr? (List.replicate 20 (0x11 : B8))).map Adr.toHex
+  = some (String.join <| List.replicate 20 "11")
+-- The overlong case used to decode to the address of its twenty-byte prefix.
+#guard (B8L.toAdr? (List.replicate 20 (0x11 : B8) ++ [0x22])).isNone
+
+-- Optional creation receivers: empty is creation, twenty bytes is a call, and
+-- every other width is malformed rather than silently one of the two.
+#guard (B8L.toReceiver? []) = some none
+#guard ((B8L.toReceiver? (List.replicate 20 (0x11 : B8))).map (Option.map Adr.toHex))
+  = some (some (String.join <| List.replicate 20 "11"))
+#guard (B8L.toReceiver? (List.replicate 19 (0x11 : B8))).isNone
+#guard (B8L.toReceiver? (List.replicate 21 (0x11 : B8))).isNone
+#guard (B8L.toReceiver? [0x00]).isNone
 
 def Adr.toB8L (a : Adr) : B8L := a.1.toB8L ++ a.2.toB8L
 

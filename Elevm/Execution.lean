@@ -902,6 +902,158 @@ def isEthereumException (err : String) : Bool :=
 def isRlpException (err : String) : Bool :=
   List.any ["EncodingError", "DecodingError"] (hasErrorType err)
 
+------------------- STRICT CONSENSUS-FIELD DECODERS --------------------
+
+-- The `Except`-level face of the strict shape checks in `Elevm/Types.lean`.
+-- Each helper names one precise reason a consensus field can be malformed, in
+-- the `hasErrorType` tag convention the rest of the executable uses: a bare tag,
+-- or a tag followed by " : " and free diagnostic text. The tags are separate
+-- because the official fixture identities are separate -- a scalar wider than
+-- 64 bits is `RLP_INVALID_FIELD_OVERFLOW_64`, a wrong list shape is
+-- `RLP_STRUCTURES_ENCODING` -- so one generic `"DecodingError"` covering both
+-- cannot be classified. Nothing routes these tags to identities yet; wiring
+-- the header, withdrawal, and transaction decoders through them, and mapping
+-- the tags, is later work.
+
+/-- An RLP item is not the list/string structure the field requires. -/
+def rlpStructureTag : String := "RlpStructureError"
+
+/-- A fixed-width field is not exactly as wide as it must be. -/
+def rlpFixedWidthTag : String := "RlpFixedWidthError"
+
+/-- A scalar field modelled as 64 bits does not fit in eight bytes. -/
+def rlpFieldOverflow64Tag : String := "RlpFieldOverflow64Error"
+
+/-- A scalar field modelled as 256 bits does not fit in thirty-two bytes. -/
+def rlpFieldOverflow256Tag : String := "RlpFieldOverflow256Error"
+
+/-- A scalar is within its width but not canonically encoded. -/
+def rlpLeadingZerosTag : String := "RlpLeadingZerosError"
+
+/-- The error for an RLP item whose structure is not what the field requires.
+Kept here so structure failures read the same at every call site. -/
+def rlpStructureError (name : String) (detail : String) : String :=
+  s!"{rlpStructureTag} : {name} : {detail}"
+
+/-- A fixed-width field: exactly `n` bytes, no more and no fewer. -/
+def B8L.toRlpFixed (name : String) (n : Nat) (xs : B8L) : Except String B8L :=
+  (xs.toFixed? n).toExcept
+    s!"{rlpFixedWidthTag} : {name} must be exactly {n} bytes, but is {xs.length}"
+
+/-- The canonicality half of scalar checking, shared by every width. The
+overflow tag is a parameter because the width is what the official vocabulary
+distinguishes, while non-canonical encoding is one reason at every width. -/
+private def rlpScalarBytes (overflowTag name : String) (n : Nat) (xs : B8L) :
+  Except String B8L := do
+  if xs.length > n then
+    .error
+      s!"{overflowTag} : {name} scalar is {xs.length} bytes, \
+         exceeding its {n}-byte width"
+  if xs.head? = some (0 : B8) then
+    .error
+      s!"{rlpLeadingZerosTag} : {name} scalar 0x{B8L.toHex xs} \
+         is not canonically encoded (leading zero byte)"
+  .ok xs
+
+/-- A canonical unsigned scalar of at most `n` bytes, as a `Nat`. Overflow is
+reported against the 256-bit identity, this being the widest scalar the
+consensus fields have; a field modelled as 64 bits must use `toRlpB64`. -/
+def B8L.toRlpNat (name : String) (n : Nat) (xs : B8L) : Except String Nat := do
+  let xs ← rlpScalarBytes rlpFieldOverflow256Tag name n xs
+  .ok xs.toNat
+
+/-- A canonical 64-bit scalar: at most eight bytes, converted without
+truncation. -/
+def B8L.toRlpB64 (name : String) (xs : B8L) : Except String B64 := do
+  let xs ← rlpScalarBytes rlpFieldOverflow64Tag name 8 xs
+  .ok xs.toB64
+
+/-- A canonical 256-bit scalar: at most thirty-two bytes, converted without
+truncation. -/
+def B8L.toRlpB256 (name : String) (xs : B8L) : Except String B256 := do
+  let xs ← rlpScalarBytes rlpFieldOverflow256Tag name 32 xs
+  .ok xs.toB256
+
+/-- An address field: exactly twenty bytes. -/
+def B8L.toRlpAdr (name : String) (xs : B8L) : Except String Adr :=
+  xs.toAdr?.toExcept
+    s!"{rlpFixedWidthTag} : {name} must be exactly 20 bytes, but is {xs.length}"
+
+/-- An optional contract-creation receiver: empty, or exactly twenty bytes. -/
+def B8L.toRlpReceiver (name : String) (xs : B8L) : Except String (Option Adr) :=
+  xs.toReceiver?.toExcept
+    s!"{rlpFixedWidthTag} : {name} must be empty or exactly 20 bytes, \
+       but is {xs.length}"
+
+--------------- STRICT DECODER REGRESSION CHECKS ----------------
+
+-- Each reason is reported under its own tag, and each tag is recognized by the
+-- `hasErrorType` convention the classifier reads -- an exact tag, or a tag
+-- opening detail text at " : ". Accepted values are checked too: the point of
+-- rejecting a nine-byte index is to keep the eight-byte ones exact.
+
+private def rlpTags : List String :=
+  [ rlpStructureTag, rlpFixedWidthTag, rlpFieldOverflow64Tag,
+    rlpFieldOverflow256Tag, rlpLeadingZerosTag ]
+
+-- The tags are distinct, and none is a prefix of another: `hasErrorType` reads
+-- a tag up to a fixed " : ", so one tag must never be readable as another.
+#guard rlpTags.eraseDups.length = 5
+#guard rlpTags.all fun t => (rlpTags.filter fun u => t.isPrefixOf u).length = 1
+
+-- The old generic RLP strings are not these tags, and these tags are not the
+-- old generic strings: a strict reason can never be read as `"DecodingError"`.
+#guard rlpTags.all fun t => ¬ isRlpException t
+#guard rlpTags.all fun t => ¬ isEthereumException t
+
+private def errOf {α : Type} : Except String α → String
+  | .error e => e
+  | .ok _ => "unexpected success"
+
+private def hasTag {α : Type} (tag : String) (e : Except String α) : Bool :=
+  hasErrorType (errOf e) tag
+
+-- Fixed-width fields: both the short and the long side are width errors.
+#guard (B8L.toRlpFixed "root" 32 (List.replicate 32 (0x11 : B8))).toOption.isSome
+#guard hasTag rlpFixedWidthTag (B8L.toRlpFixed "root" 32 (List.replicate 31 (0x11 : B8)))
+#guard hasTag rlpFixedWidthTag (B8L.toRlpFixed "root" 32 (List.replicate 33 (0x11 : B8)))
+
+-- 64-bit scalars: accepted widths convert exactly, nine bytes is an overflow
+-- rather than a truncation, and a leading zero is a distinct reason from an
+-- overflow. This is the withdrawal-index case.
+#guard (B8L.toRlpB64 "index" []).toOption.map B64.toNat = some 0
+#guard (B8L.toRlpB64 "index" (List.replicate 8 (0xFF : B8))).toOption.map B64.toNat
+  = some (2 ^ 64 - 1)
+#guard hasTag rlpFieldOverflow64Tag
+  (B8L.toRlpB64 "index" (0x01 :: List.replicate 8 (0x00 : B8)))
+#guard hasTag rlpLeadingZerosTag (B8L.toRlpB64 "index" [0x00, 0x01])
+#guard ¬ hasTag rlpFieldOverflow64Tag (B8L.toRlpB64 "index" [0x00, 0x01])
+#guard ¬ hasTag rlpLeadingZerosTag
+  (B8L.toRlpB64 "index" (0x01 :: List.replicate 8 (0x00 : B8)))
+
+-- 256-bit scalars: same reasons, one width up, under the 256-bit overflow tag.
+#guard (B8L.toRlpB256 "amount" (List.replicate 32 (0xFF : B8))).toOption.map B256.toNat
+  = some (2 ^ 256 - 1)
+#guard hasTag rlpFieldOverflow256Tag
+  (B8L.toRlpB256 "amount" (List.replicate 33 (0x01 : B8)))
+#guard hasTag rlpLeadingZerosTag (B8L.toRlpB256 "amount" [0x00, 0x01])
+#guard (B8L.toRlpNat "value" 32 (List.replicate 32 (0xFF : B8))).toOption
+  = some (2 ^ 256 - 1)
+#guard hasTag rlpFieldOverflow256Tag (B8L.toRlpNat "value" 32 (List.replicate 33 (0x01 : B8)))
+
+-- Addresses and optional receivers: a width error, never a silent creation.
+#guard (B8L.toRlpAdr "recipient" (List.replicate 20 (0x11 : B8))).toOption.isSome
+#guard hasTag rlpFixedWidthTag (B8L.toRlpAdr "recipient" (List.replicate 19 (0x11 : B8)))
+#guard hasTag rlpFixedWidthTag (B8L.toRlpAdr "recipient" (List.replicate 21 (0x11 : B8)))
+#guard hasTag rlpFixedWidthTag (B8L.toRlpAdr "recipient" [])
+#guard (B8L.toRlpReceiver "receiver" []).toOption = some none
+#guard (B8L.toRlpReceiver "receiver" (List.replicate 20 (0x11 : B8))).toOption.isSome
+#guard hasTag rlpFixedWidthTag (B8L.toRlpReceiver "receiver" (List.replicate 21 (0x11 : B8)))
+
+-- A structure failure is its own reason, not a width or overflow one.
+#guard hasErrorType (rlpStructureError "block" "expected a 4-item list") rlpStructureTag
+#guard ¬ hasErrorType (rlpStructureError "block" "expected a 4-item list") rlpFixedWidthTag
+
 @[ext]
 structure Mach : Type where
   stack : List B256
