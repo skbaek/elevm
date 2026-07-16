@@ -441,10 +441,6 @@ def TxType.blobHashes : TxType → List B256
 
 def Tx.blobHashes (tx : Tx) : List B256 := tx.type.blobHashes
 
-def BLT.toB256 : BLT → Option B256
-  | .b8s bs => some bs.toB256
-  | _ => none
-
 -- nibbles-to-bytes maps
 abbrev NTB := Std.TreeMap (List B8) (List B8) (@List.compare _ ⟨B8.compareLows⟩)
 
@@ -5030,18 +5026,38 @@ def processWithdrawals
   let state := processWithdrawalsState benv.state wds
   ⟨state, bout.withWithdrawalsTrie trie⟩
 
-def BLT.toAccessItem : BLT → Option (Adr × List B256)
+-- Access lists, blob hashes, and authorization tuples arrive inside typed
+-- transactions, so their fields are untrusted in exactly the way withdrawal
+-- fields are: every shape must be checked before any truncating conversion,
+-- and a wrong list shape is a different reason from an oversized scalar.
+
+def BLT.toExStrStorageKey : BLT → Except String B256
+  | .b8s xs => xs.toRlpHash "access list storage key"
+  | .list _ =>
+    .error <| rlpStructureError "access list storage key"
+      "expected a byte-string item"
+
+def BLT.toExStrAccessItem : BLT → Except String (Adr × List B256)
   | .list [.b8s ar, .list ksr] => do
-    let a ← B8L.toAdr? ar
-    let ks ← List.mapM toB256 ksr
-    pure ⟨a, ks⟩
-  | _ => none
+    let a ← ar.toRlpAdr "access list address"
+    let ks ← List.mapM BLT.toExStrStorageKey ksr
+    .ok ⟨a, ks⟩
+  | _ =>
+    .error <| rlpStructureError "access list item"
+      "expected [address, [storage key, ...]]"
 
-def BLT.toAccessList : BLT → Option AccessList
-  | .list rs => List.mapM toAccessItem rs
-  | _ => none
+def BLT.toExStrAccessList : BLT → Except String AccessList
+  | .list rs => List.mapM BLT.toExStrAccessItem rs
+  | .b8s _ =>
+    .error <| rlpStructureError "access list" "expected a list item"
 
-def BLT.toAuth : BLT → Option Auth
+def BLT.toExStrBlobHash : BLT → Except String B256
+  | .b8s xs => xs.toRlpHash "blob versioned hash"
+  | .list _ =>
+    .error <| rlpStructureError "blob versioned hash"
+      "expected a byte-string item"
+
+def BLT.toExStrAuth : BLT → Except String Auth
   | .list [
       .b8s chainId,
       .b8s address,
@@ -5050,22 +5066,35 @@ def BLT.toAuth : BLT → Option Auth
       .b8s r,
       .b8s s
     ] => do
-      let address ← address.toAdr?
-      pure {
-        chainId := chainId.toB64
+      let chainId ← chainId.toRlpB64 "authorization chainId"
+      let address ← address.toRlpAdr "authorization address"
+      let nonce ← nonce.toRlpB64 "authorization nonce"
+      let yParity ← yParity.toRlpNat "authorization yParity" 32
+      let r ← r.toRlpB256 "authorization r"
+      let s ← s.toRlpB256 "authorization s"
+      .ok {
+        chainId := chainId
         address := address
-        nonce := nonce.toB64
-        yParity := yParity.toNat
-        r := r.toB256
-        s := s.toB256
+        nonce := nonce
+        yParity := yParity
+        r := r
+        s := s
       }
-  | _ => none
+  | _ =>
+    .error <| rlpStructureError "authorization"
+      "expected a list of six byte-string fields"
 
 def B8L.toExStrTx : B8L → Except String Tx
-  | [] => .error "error : cannot decode empty transaction BLT"
+  | [] =>
+    .error <| rlpStructureError "typed transaction"
+      "cannot decode an empty byte string"
   | x :: xs =>
+    -- Every scalar is bounded before conversion: `B8L.toB64` truncates modulo
+    -- 2^64, so it may only see bytes returned by a strict decoder. Signature
+    -- scalars keep their minimally encoded bytes once validated, so signing
+    -- and trie bytes are unchanged for valid transactions.
     match x, B8L.toBLT? xs with
-    | 0x01, BLT.list [
+    | 0x01, some (.list [
         .b8s chainId,
         .b8s nonce,
         .b8s gasPrice,
@@ -5077,22 +5106,31 @@ def B8L.toExStrTx : B8L → Except String Tx
         .b8s yParity,
         .b8s r,
         .b8s s
-      ] => do .ok {
-          nonce := nonce.toB64,
-          gas := gas.toNat,
-          value := value.toNat,
-          data := data,
-          v := yParity.toNat,
-          r := (r.reverse.takeD 32 0).reverse,
-          s := (s.reverse.takeD 32 0).reverse,
-          type :=
-            .one
-              chainId.toB64
-              gasPrice.toNat
-              receiver.toAdr?
-              (← accessList.toAccessList.toExcept "cannot decode access list")
-        }
-    | 0x02, BLT.list [
+      ]) => do
+      let chainId ← chainId.toRlpB64 "type-1 transaction chainId"
+      let nonce ← nonce.toRlpB64 "type-1 transaction nonce"
+      let gasPrice ← gasPrice.toRlpNat "type-1 transaction gasPrice" 32
+      let gas ← gas.toRlpNat "type-1 transaction gas" 32
+      let receiver ← receiver.toRlpReceiver "type-1 transaction receiver"
+      let value ← value.toRlpNat "type-1 transaction value" 32
+      let accessList ← accessList.toExStrAccessList
+      let yParity ← yParity.toRlpNat "type-1 transaction yParity" 32
+      let _ ← r.toRlpB256 "type-1 transaction r"
+      let _ ← s.toRlpB256 "type-1 transaction s"
+      .ok {
+        nonce := nonce,
+        gas := gas,
+        value := value,
+        data := data,
+        v := yParity,
+        r := r,
+        s := s,
+        type := .one chainId gasPrice receiver accessList
+      }
+    | 0x01, _ =>
+      .error <| rlpStructureError "type-1 transaction"
+        "expected a list of eleven fields"
+    | 0x02, some (.list [
         .b8s chainId,
         .b8s nonce,
         .b8s maxPriorityFee,
@@ -5105,23 +5143,32 @@ def B8L.toExStrTx : B8L → Except String Tx
         .b8s yParity,
         .b8s r,
         .b8s s
-      ] => do .ok {
-        nonce := nonce.toB64,
-        gas := gas.toNat,
-        value := value.toNat,
+      ]) => do
+      let chainId ← chainId.toRlpB64 "type-2 transaction chainId"
+      let nonce ← nonce.toRlpB64 "type-2 transaction nonce"
+      let maxPriorityFee ← maxPriorityFee.toRlpNat "type-2 transaction maxPriorityFee" 32
+      let maxFee ← maxFee.toRlpNat "type-2 transaction maxFee" 32
+      let gas ← gas.toRlpNat "type-2 transaction gas" 32
+      let receiver ← receiver.toRlpReceiver "type-2 transaction receiver"
+      let value ← value.toRlpNat "type-2 transaction value" 32
+      let accessList ← accessList.toExStrAccessList
+      let yParity ← yParity.toRlpNat "type-2 transaction yParity" 32
+      let _ ← r.toRlpB256 "type-2 transaction r"
+      let _ ← s.toRlpB256 "type-2 transaction s"
+      .ok {
+        nonce := nonce,
+        gas := gas,
+        value := value,
         data := data,
-        v := yParity.toNat,
-        r := (r.reverse.takeD 32 0).reverse,
-        s := (s.reverse.takeD 32 0).reverse,
-        type :=
-          .two
-            chainId.toB64
-            maxPriorityFee.toNat
-            maxFee.toNat
-            receiver.toAdr?
-            (← accessList.toAccessList.toExcept "cannot decode access list")
+        v := yParity,
+        r := r,
+        s := s,
+        type := .two chainId maxPriorityFee maxFee receiver accessList
       }
-    | 0x03, BLT.list [
+    | 0x02, _ =>
+      .error <| rlpStructureError "type-2 transaction"
+        "expected a list of twelve fields"
+    | 0x03, some (.list [
         .b8s chainId,
         .b8s nonce,
         .b8s maxPriorityFee,
@@ -5136,25 +5183,39 @@ def B8L.toExStrTx : B8L → Except String Tx
         .b8s yParity,
         .b8s r,
         .b8s s
-      ] => do .ok {
-        nonce := nonce.toB64,
-        gas := gas.toNat,
-        value := value.toNat,
+      ]) => do
+      let chainId ← chainId.toRlpB64 "type-3 transaction chainId"
+      let nonce ← nonce.toRlpB64 "type-3 transaction nonce"
+      let maxPriorityFee ← maxPriorityFee.toRlpNat "type-3 transaction maxPriorityFee" 32
+      let maxFee ← maxFee.toRlpNat "type-3 transaction maxFee" 32
+      let gas ← gas.toRlpNat "type-3 transaction gas" 32
+      -- A type-3 receiver is a mandatory address at the RLP level; the
+      -- semantic contract-creation rejection downstream remains as defense
+      -- in depth for transactions that arrive already decoded.
+      let receiver ← receiver.toRlpAdr "type-3 transaction receiver"
+      let value ← value.toRlpNat "type-3 transaction value" 32
+      let accessList ← accessList.toExStrAccessList
+      let maxBlobFee ← maxBlobFee.toRlpNat "type-3 transaction maxBlobFee" 32
+      let blobHashes ← List.mapM BLT.toExStrBlobHash blobHashes
+      let yParity ← yParity.toRlpNat "type-3 transaction yParity" 32
+      let _ ← r.toRlpB256 "type-3 transaction r"
+      let _ ← s.toRlpB256 "type-3 transaction s"
+      .ok {
+        nonce := nonce,
+        gas := gas,
+        value := value,
         data := data,
-        v := yParity.toNat,
-        r := (r.reverse.takeD 32 0).reverse,
-        s := (s.reverse.takeD 32 0).reverse,
+        v := yParity,
+        r := r,
+        s := s,
         type :=
-          .three
-            chainId.toB64
-            maxPriorityFee.toNat
-            maxFee.toNat
-            (← receiver.toAdr?.toExcept "DecodingError")
-            (← accessList.toAccessList.toExcept "cannot decode access list")
-            maxBlobFee.toNat
-            (← List.mapM (λ r => r.toB256.toExcept "cannot decode blob hash") blobHashes)
+          .three chainId maxPriorityFee maxFee receiver accessList
+            maxBlobFee blobHashes
       }
-    | 0x04, BLT.list [
+    | 0x03, _ =>
+      .error <| rlpStructureError "type-3 transaction"
+        "expected a list of fourteen fields"
+    | 0x04, some (.list [
         .b8s chainId,
         .b8s nonce,
         .b8s maxPriorityFee,
@@ -5168,24 +5229,32 @@ def B8L.toExStrTx : B8L → Except String Tx
         .b8s yParity,
         .b8s r,
         .b8s s
-      ] => do .ok {
-        nonce := nonce.toB64,
-        gas := gas.toNat,
-        value := value.toNat,
+      ]) => do
+      let chainId ← chainId.toRlpB64 "type-4 transaction chainId"
+      let nonce ← nonce.toRlpB64 "type-4 transaction nonce"
+      let maxPriorityFee ← maxPriorityFee.toRlpNat "type-4 transaction maxPriorityFee" 32
+      let maxFee ← maxFee.toRlpNat "type-4 transaction maxFee" 32
+      let gas ← gas.toRlpNat "type-4 transaction gas" 32
+      let receiver ← receiver.toRlpAdr "type-4 transaction receiver"
+      let value ← value.toRlpNat "type-4 transaction value" 32
+      let accessList ← accessList.toExStrAccessList
+      let auths ← List.mapM BLT.toExStrAuth auths
+      let yParity ← yParity.toRlpNat "type-4 transaction yParity" 32
+      let _ ← r.toRlpB256 "type-4 transaction r"
+      let _ ← s.toRlpB256 "type-4 transaction s"
+      .ok {
+        nonce := nonce,
+        gas := gas,
+        value := value,
         data := data,
-        v := yParity.toNat,
-        r := (r.reverse.takeD 32 0).reverse,
-        s := (s.reverse.takeD 32 0).reverse,
-        type :=
-          .four
-            chainId.toB64
-            maxPriorityFee.toNat
-            maxFee.toNat
-            (← receiver.toAdr?.toExcept "DecodingError")
-            (← accessList.toAccessList.toExcept "cannot decode access list")
-            (← (List.mapM BLT.toAuth auths).toExcept
-              "cannot decode authorization list")
+        v := yParity,
+        r := r,
+        s := s,
+        type := .four chainId maxPriorityFee maxFee receiver accessList auths
       }
+    | 0x04, _ =>
+      .error <| rlpStructureError "type-4 transaction"
+        "expected a list of thirteen fields"
     | x, _ => .error s!"ERROR : type-{x} txs do not exist, decoding failed"
 
 def decodeTx : B8L ⊕ Tx → Except String Tx
@@ -5672,6 +5741,137 @@ private def canonicalLegacyVector : BLT :=
 #guard hasTag rlpWithdrawalsNotReadTag <|
   BLT.toExStrBlock (.list [.b8s [], .list [], .list []])
 #guard hasTag rlpStructureTag <| BLT.toExStrBlock (.b8s [])
+
+--------- STRICT TYPED-TRANSACTION DECODER REGRESSION CHECKS ----------
+
+-- A typed transaction is its type byte followed by the RLP encoding of its
+-- payload list. Each negative vector below is a one-field mutation of its
+-- type's positive vector, so the failing field is unambiguous.
+
+private def typedTxVector (type : B8) (fields : List BLT) : B8L :=
+  type :: BLT.toB8L (.list fields)
+
+private def testStorageKey : B8L := List.replicate 32 0x22
+private def testBlobHash : B8L := 0x01 :: List.replicate 31 0x33
+-- Thirty-two bytes with a nonzero leading byte: a canonical full-width
+-- scalar, usable for `r`/`s` at the transaction and authorization level.
+private def fullWidthScalar : B8L := 0x01 :: List.replicate 31 0x00
+
+private def accessListOf (adr key : B8L) : BLT :=
+  .list [.list [.b8s adr, .list [.b8s key]]]
+
+private def authOf (chainId adr nonce r s : B8L) : BLT :=
+  .list [.b8s chainId, .b8s adr, .b8s nonce, .b8s [0x01], .b8s r, .b8s s]
+
+private def type1Vector (chainId nonce receiver r : B8L) (accessList : BLT) : B8L :=
+  typedTxVector 0x01 [
+    .b8s chainId, .b8s nonce, .b8s [0x0a], .b8s [0x52, 0x08], .b8s receiver,
+    .b8s [], .b8s [], accessList, .b8s [0x01], .b8s r, .b8s [0x02]
+  ]
+
+private def type2Vector (maxFee receiver s : B8L) : B8L :=
+  typedTxVector 0x02 [
+    .b8s [0x01], .b8s [0x01], .b8s [0x01], .b8s maxFee, .b8s [0x52, 0x08],
+    .b8s receiver, .b8s [], .b8s [], .list [], .b8s [0x01], .b8s [0x01], .b8s s
+  ]
+
+private def type3Vector (nonce receiver blobHash : B8L) : B8L :=
+  typedTxVector 0x03 [
+    .b8s [0x01], .b8s nonce, .b8s [0x01], .b8s [0x0a], .b8s [0x52, 0x08],
+    .b8s receiver, .b8s [], .b8s [], .list [], .b8s [0x01],
+    .list [.b8s blobHash], .b8s [0x01], .b8s [0x01], .b8s [0x02]
+  ]
+
+private def type4Vector (receiver : B8L) (auth : BLT) : B8L :=
+  typedTxVector 0x04 [
+    .b8s [0x01], .b8s [0x01], .b8s [0x01], .b8s [0x0a], .b8s [0x52, 0x08],
+    .b8s receiver, .b8s [], .b8s [], .list [], .list [auth],
+    .b8s [0x01], .b8s [0x01], .b8s [0x02]
+  ]
+
+private def goodAuth : BLT :=
+  authOf [0x01] testRecipient [0x01] fullWidthScalar fullWidthScalar
+
+-- One positive vector per type: it decodes, and it re-encodes to the exact
+-- input bytes, so trie bytes for valid transactions are unchanged.
+private def reencodes (type : B8) (v : B8L) : Bool :=
+  (B8L.toExStrTx v).toOption.map (fun tx => type :: tx.toBLT.toB8L) == some v
+
+#guard reencodes 0x01 <|
+  type1Vector [0x01] [0x01] testRecipient [0x01]
+    (accessListOf testRecipient testStorageKey)
+#guard reencodes 0x02 <| type2Vector [0x0a] testRecipient [0x02]
+#guard reencodes 0x03 <| type3Vector [0x01] testRecipient testBlobHash
+#guard reencodes 0x04 <| type4Vector testRecipient goodAuth
+
+-- A type-1/type-2 receiver may be empty, meaning contract creation...
+#guard (B8L.toExStrTx (type2Vector [0x0a] [] [0x02])).toOption.isSome
+-- ...but a type-3 receiver may not, and 19/21-byte receivers fail everywhere.
+#guard hasTag rlpFixedWidthTag <|
+  B8L.toExStrTx <| type3Vector [0x01] [] testBlobHash
+#guard hasTag rlpFixedWidthTag <| B8L.toExStrTx <|
+  type1Vector [0x01] [0x01] (List.replicate 21 0x11) [0x01] (.list [])
+#guard hasTag rlpFixedWidthTag <|
+  B8L.toExStrTx <| type4Vector (List.replicate 19 0x11) goodAuth
+
+-- Oversized scalars are overflows at the field boundary, not truncations.
+#guard hasTag rlpFieldOverflow64Tag <| B8L.toExStrTx <|
+  type1Vector [0x01] nineByteScalar testRecipient [0x01] (.list [])
+#guard hasTag rlpFieldOverflow64Tag <| B8L.toExStrTx <|
+  type1Vector nineByteScalar [0x01] testRecipient [0x01] (.list [])
+#guard hasTag rlpFieldOverflow64Tag <|
+  B8L.toExStrTx <| type3Vector nineByteScalar testRecipient testBlobHash
+#guard hasTag rlpFieldOverflow256Tag <|
+  B8L.toExStrTx <| type2Vector thirtyThreeByteScalar testRecipient [0x02]
+-- The two fields the deleted `reverse.takeD 32` pattern used to truncate.
+#guard hasTag rlpFieldOverflow256Tag <| B8L.toExStrTx <|
+  type1Vector [0x01] [0x01] testRecipient thirtyThreeByteScalar (.list [])
+#guard hasTag rlpFieldOverflow256Tag <|
+  B8L.toExStrTx <| type2Vector [0x0a] testRecipient thirtyThreeByteScalar
+
+-- Access lists: exact address and storage-key widths, and both list shapes.
+#guard hasTag rlpFixedWidthTag <| B8L.toExStrTx <|
+  type1Vector [0x01] [0x01] testRecipient [0x01]
+    (accessListOf (List.replicate 21 0x11) testStorageKey)
+#guard hasTag rlpFixedWidthTag <| B8L.toExStrTx <|
+  type1Vector [0x01] [0x01] testRecipient [0x01]
+    (accessListOf testRecipient (List.replicate 33 0x22))
+#guard hasTag rlpFixedWidthTag <| B8L.toExStrTx <|
+  type1Vector [0x01] [0x01] testRecipient [0x01]
+    (accessListOf testRecipient (List.replicate 31 0x22))
+#guard hasTag rlpStructureTag <| B8L.toExStrTx <|
+  type1Vector [0x01] [0x01] testRecipient [0x01] (.list [.b8s []])
+#guard hasTag rlpStructureTag <| B8L.toExStrTx <|
+  type1Vector [0x01] [0x01] testRecipient [0x01] (.b8s [])
+
+-- Blob versioned hashes: exactly thirty-two bytes, both sides.
+#guard hasTag rlpFixedWidthTag <| B8L.toExStrTx <|
+  type3Vector [0x01] testRecipient (0x01 :: List.replicate 32 0x33)
+#guard hasTag rlpFixedWidthTag <|
+  B8L.toExStrTx <| type3Vector [0x01] testRecipient (List.replicate 31 0x33)
+
+-- Authorizations: exact address width, bounded chainId and nonce, bounded
+-- r/s, and the six-field list shape.
+#guard hasTag rlpFixedWidthTag <| B8L.toExStrTx <| type4Vector testRecipient <|
+  authOf [0x01] (List.replicate 21 0x11) [0x01] fullWidthScalar fullWidthScalar
+#guard hasTag rlpFieldOverflow64Tag <| B8L.toExStrTx <| type4Vector testRecipient <|
+  authOf nineByteScalar testRecipient [0x01] fullWidthScalar fullWidthScalar
+#guard hasTag rlpFieldOverflow64Tag <| B8L.toExStrTx <| type4Vector testRecipient <|
+  authOf [0x01] testRecipient nineByteScalar fullWidthScalar fullWidthScalar
+#guard hasTag rlpFieldOverflow256Tag <| B8L.toExStrTx <| type4Vector testRecipient <|
+  authOf [0x01] testRecipient [0x01] thirtyThreeByteScalar fullWidthScalar
+#guard hasTag rlpFieldOverflow256Tag <| B8L.toExStrTx <| type4Vector testRecipient <|
+  authOf [0x01] testRecipient [0x01] fullWidthScalar thirtyThreeByteScalar
+#guard hasTag rlpStructureTag <| B8L.toExStrTx <|
+  type4Vector testRecipient (.list [.b8s [0x01], .b8s testRecipient])
+
+-- A wrong list shape for a known type byte is a structure error; an unknown
+-- type byte keeps its own failure; empty input is a structure error.
+#guard hasTag rlpStructureTag <| B8L.toExStrTx (0x01 :: BLT.toB8L (.b8s []))
+#guard hasTag rlpStructureTag <| B8L.toExStrTx (0x02 :: BLT.toB8L (.list []))
+#guard hasTag rlpStructureTag <| B8L.toExStrTx []
+#guard ¬ hasTag rlpStructureTag (B8L.toExStrTx [0x05])
+#guard (B8L.toExStrTx [0x05]).toOption.isNone
 
 def addBlockToChain (chain : BlockChain) (blockRlp : B8L) :
   Except String (BlockChain ⊕ String) := do
