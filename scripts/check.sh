@@ -7,7 +7,7 @@
 #   --smoke       run the smoke set (scripts/smoke-tests.txt)
 #   --full        run every .json fixture under the fixture root
 #   --patch       run the patch-plan target set (scripts/patch-tests.txt): the
-#                 ten historical FAIL files plus CALLBlake2f_MaxRounds.json
+#                 ten historical FAIL files
 #   --rlp4        run the four invalid-RLP/header files (scripts/rlp4-tests.txt),
 #                 a subset of --patch
 #   --dir <path>  run every .json fixture under <path> (must be inside the
@@ -152,6 +152,7 @@ while IFS= read -r REL; do
   # alarm(2) persists across exec: when the timeout fires, SIGALRM kills the
   # exec'd elevm (exit status 128 + 14 = 142).
   perl -e 'alarm shift @ARGV; exec @ARGV' "$TIMEOUT" "$BIN" "$FIXTURES/$REL" \
+    --network Prague \
     > /dev/null 2>&1
   RC=$?
   ELAPSED="$(perl -e 'printf "%.2f", $ARGV[1] - $ARGV[0]' \

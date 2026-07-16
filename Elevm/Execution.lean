@@ -1034,21 +1034,6 @@ def isBlockException (err : String) : Bool :=
 #guard ¬ isBlockException "InvalidBlock"
 #guard ¬ isBlockException "InvalidBlock : gas limit is wrong"
 
--- `isBlockException` is a member here only as scaffolding. The old fixture
--- oracle accepts a rejected block iff its error `isEthereumException` or
--- `isRlpException`, so replacing a bare `"InvalidBlock"` with a precise tag
--- would otherwise turn every currently-accepted invalid block into a failure
--- for a reason that is the opposite of the truth -- the producer got *more*
--- precise. This whole broad predicate is deleted once the exact-identity
--- matcher becomes the oracle; the precision lives in the tags, not here.
-def isEthereumException (err : String) : Bool :=
-  hasErrorType err "InvalidBlock" ||
-  isBlockException err ||
-  isInvalidTransaction err
-
-def isRlpException (err : String) : Bool :=
-  List.any ["EncodingError", "DecodingError"] (hasErrorType err)
-
 ------------------- STRICT CONSENSUS-FIELD DECODERS --------------------
 
 -- The `Except`-level face of the strict shape checks in `Elevm/Types.lean`.
@@ -1173,10 +1158,11 @@ private def rlpTags : List String :=
 #guard rlpTags.eraseDups.length = 7
 #guard rlpTags.all fun t => (rlpTags.filter fun u => t.isPrefixOf u).length = 1
 
--- The old generic RLP strings are not these tags, and these tags are not the
--- old generic strings: a strict reason can never be read as `"DecodingError"`.
-#guard rlpTags.all fun t => ¬ isRlpException t
-#guard rlpTags.all fun t => ¬ isEthereumException t
+-- The strict tags are not readable as either of the old generic categories.
+#guard rlpTags.all fun t => ¬ hasErrorType t "DecodingError"
+#guard rlpTags.all fun t => ¬ hasErrorType t "EncodingError"
+#guard rlpTags.all fun t => ¬ hasErrorType t "InvalidBlock"
+#guard rlpTags.all fun t => ¬ hasErrorType t "InvalidTransaction"
 
 private def errOf {α : Type} : Except String α → String
   | .error e => e

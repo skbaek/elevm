@@ -152,44 +152,78 @@ def Except.toIO {ξ : Type} : Except String ξ → IO ξ
   | .ok x => .ok x
   | .error err => .throw err
 
-def processBlockJsons (chain : BlockChain) :
-  List Lean.Json → IO (Option BlockChain)
-  | j :: js => do
-    let ⟨ex, j⟩ ← getTxExMap j
-    match ex with
-    | .none =>
-      match (← (addBlockToChain chain j).toIO) with
-      | .inr ex => .throw s!"unexpected TX exception : {ex}"
-      | .inl chain => processBlockJsons chain js
-    | .some _ =>
-      match (← (addBlockToChain chain j).toIO) with
-      | .inr ex' =>
-        .guard
-          (isEthereumException ex' || isRlpException ex')
-          s!"ERROR : {ex'} is not an ethereum exception or an RLP exception"
-        .ok none
-      | .inl _ =>
-        .throw "ERROR : expected exception not raised"
-  | [] => .ok <| some chain
+def actualExceptionDiagnostic (err : String) : String :=
+  match FixtureException.classify err with
+  | some actual => actual.toString
+  | none => "<unknown canonical identity>"
 
-def runBlockchainStTest (idx? : Option Nat)
-  (incls excls : List String) : (Nat × String × Lean.Json) → IO Unit
+/-- Decode enough of a fixture block to select its parent snapshot, then run
+the public block-import API. Both failure channels of `addBlockToChain` are
+collapsed only after they have been handled explicitly. -/
+def evaluateFixtureBlock (store : ChainStore) (blockRlp : B8L) :
+    Except String (B256 × BlockChain) := do
+  let ⟨block, blockHeaderHash⟩ ← rlpToBlock blockRlp
+  let parent ← store.findParent block.header.parentHash
+  match addBlockToChain parent blockRlp with
+  | .error err => .error err
+  | .ok (.inr err) => .error err
+  | .ok (.inl child) => .ok ⟨blockHeaderHash, child⟩
+
+def requireExpectedFailure (idx : Nat) (chainname : String)
+    (expected : List FixtureException) (err : String) : IO Unit := do
+  match FixtureException.classify err with
+  | none =>
+    .throw s!"BLOCK #{idx} ({chainname}) failed with an unknown actual error\n\
+      raw actual: {repr err}\ncanonical actual: <unknown>\n\
+      expected: {expected.map FixtureException.toString}"
+  | some actual =>
+    if expected.contains actual then
+      .println s!"EXPECTED INVALID BLOCK #{idx} ({chainname}) : {actual.toString}"
+    else
+      .throw s!"BLOCK #{idx} ({chainname}) exception mismatch\n\
+        raw actual: {repr err}\ncanonical actual: {actual.toString}\n\
+        expected: {expected.map FixtureException.toString}"
+
+/-- Process every fixture block in list order while deriving ancestry only
+from each decoded header's `parentHash`. Expected-invalid blocks are checked
+exactly, leave the snapshot store unchanged, and never stop later blocks. -/
+def processBlockJsons (store : ChainStore) :
+  List (Nat × Lean.Json) → IO ChainStore
+  | ⟨idx, blockJson⟩ :: rest => do
+    let chainname ← blockJson.find "chainname" >>= Lean.Json.toIoString
+    .println s!"BLOCK INDEX : {idx}"
+    .println s!"CHAIN NAME : {chainname}"
+    let ⟨rawExpected?, blockRlp⟩ ← getTxExMap blockJson
+    let expected? ←
+      match rawExpected? with
+      | none => pure none
+      | some raw =>
+        match FixtureException.parseExpectation raw with
+        | .ok expected => pure (some expected)
+        | .error err =>
+          .throw s!"BLOCK #{idx} ({chainname}) has invalid expectException: {err}"
+    match evaluateFixtureBlock store blockRlp with
+    | .error err =>
+      match expected? with
+      | none =>
+        .throw s!"BLOCK #{idx} ({chainname}) was expected valid but failed\n\
+          raw actual: {repr err}\ncanonical actual: {actualExceptionDiagnostic err}"
+      | some expected =>
+        requireExpectedFailure idx chainname expected err
+        processBlockJsons store rest
+    | .ok ⟨tipHash, child⟩ =>
+      match expected? with
+      | some expected =>
+        .throw s!"BLOCK #{idx} ({chainname}) was expected invalid but imported\n\
+          expected: {expected.map FixtureException.toString}\ncomputed tip: {tipHash}"
+      | none =>
+        processBlockJsons (store.addResult (.ok ⟨tipHash, child⟩)) rest
+  | [] => .ok store
+
+def runBlockchainStTest : (Nat × String × Lean.Json) → IO Unit
   | ⟨idx, name, json⟩ => do
-    match idx? with
-    | none => .ok ()
-    | some specIdx =>
-      if specIdx ≠ idx then
-        return ()
-    if ¬ (incls.isEmpty ∨ name ∈ incls) then
-      return ()
-    if name ∈ excls then
-      return ()
-    let nw ← json.find "network" >>= Lean.Json.toIoString
-    if "Prague" ≠ nw then
-      return ()
-
     .println s!"TEST NAME : {name}"
-    -- .println s!"TEST INDEX : {idx}"
+    .println s!"TEST INDEX : {idx}"
 
     let gbh_json ← json.find "genesisBlockHeader"
     let gbh ← gbh_json.toHeader
@@ -219,8 +253,9 @@ def runBlockchainStTest (idx? : Option Nat)
     }
 
     let blockJsons ← json.find "blocks" >>= Lean.Json.toIoList
-    let (some chain) ← processBlockJsons chain blockJsons | .ok ()
+    let store ← processBlockJsons (.init gbh_hash chain) blockJsons.putIndex
     let lastBlockHash ← json.find "lastblockhash" >>= Lean.Json.toIoB256
+    let chain ← (store.findLast lastBlockHash).toIO
     let lastBlock ← chain.blocks.getLast?.toIO "error : no last block "
     let lastBlockHash' := (Header.toBLT lastBlock.header).toB8L.keccak
     .guard
@@ -232,7 +267,19 @@ def runBlockchainStTest (idx? : Option Nat)
       (postStateRoot = chain.state.root)
       s!"error : end state root does not match\n  expected : {postStateRoot}\n  computed : {chain.state.root}"
 
-def runTestFile (testIdx : Option Nat)
+def fixtureCaseSelected (network : String) (testIdx : Option Nat)
+    (incls excls : List String) : (Nat × String × Lean.Json) → IO Bool
+  | ⟨idx, name, json⟩ => do
+    if let some specIdx := testIdx then
+      if specIdx ≠ idx then return false
+    if ¬ (incls.isEmpty ∨ name ∈ incls) then
+      return false
+    if name ∈ excls then
+      return false
+    let caseNetwork ← json.find "network" >>= Lean.Json.toIoString
+    return caseNetwork = network
+
+def runTestFile (network : String) (testIdx : Option Nat)
   (incls excls : List String) (idxPath : Nat × String) : IO Unit := do
   let fileIdx := idxPath.fst
   let path := idxPath.snd
@@ -240,7 +287,14 @@ def runTestFile (testIdx : Option Nat)
   .println s!"TEST FILE #{fileIdx} : {path}\n"
   let rb ← readJsonFile path >>= Lean.Json.toIoRBNode
   let js := rb.toArray.toList.putIndex
-  let _ ← js.mapM <| runBlockchainStTest testIdx incls excls
+  let selected ← js.filterM <| fixtureCaseSelected network testIdx incls excls
+  .println s!"NETWORK : {network}"
+  .println s!"SELECTED CASES : {selected.length}"
+  .println s!"SKIPPED CASES : {js.length - selected.length}"
+  .guard (¬ selected.isEmpty)
+    s!"ERROR : zero cases match the combined network/name/index filters \
+       (network = {network}) in {path}"
+  let _ ← selected.mapM runBlockchainStTest
   .ok ()
 
 def getTestNames (incls excls : List String) :
@@ -269,6 +323,11 @@ def getTestIndex : List String → Option Nat
     else getTestIndex <| s1 :: ss
   | _ => none
 
+def getNetwork : List String → Option String
+  | "--network" :: network :: _ => some network
+  | _ :: opts => getNetwork opts
+  | [] => none
+
 def getFiles (path : System.FilePath) : IO (List System.FilePath) := do
   if (← System.FilePath.isDir path) then
     let paths ← System.FilePath.walkDir path
@@ -281,6 +340,7 @@ def main : List String → IO Unit
     verbosityRef.set (List.contains opts "--verbose")
     let testIdx : Option Nat := getTestIndex opts
     let skip : Option Nat := getSkip opts
+    let network := (getNetwork opts).getD "Prague"
     let ⟨incls, excls⟩ := getTestNames [] [] opts
     let files ← getFiles path
     let files :=
@@ -289,7 +349,7 @@ def main : List String → IO Unit
       | some n => files.drop n
     let _ ←
       List.mapM
-        (runTestFile testIdx incls excls)
+        (runTestFile network testIdx incls excls)
         (files.map System.FilePath.toString).putIndex
     pure ()
   | _ => IO.throw "error : invalid arguments"
