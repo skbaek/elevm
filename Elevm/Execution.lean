@@ -895,8 +895,126 @@ def isInvalidTransaction (err : String) : Bool :=
     "EmptyAuthorizationListError"
   ] (hasErrorType err)
 
+------------------- BLOCK-REJECTION REASONS --------------------
+
+-- One tag per reason a header or a post-transition check can reject a block.
+-- A bare `"InvalidBlock"` says only that *some* consensus rule failed, which is
+-- exactly what let a block be rejected for the wrong reason and still be scored
+-- as a pass: the official fixture vocabulary names ~17 distinct block
+-- identities, and one string cannot be mapped to them. Each tag below is the
+-- sole producer of its reason, so `Elevm/FixtureException.lean` can route it to
+-- one identity.
+--
+-- Tags follow the `hasErrorType` convention: a bare tag, or a tag opening
+-- diagnostic text at a fixed " : ". Detail text after the delimiter is free.
+
+/-- `gasLimit` is at or above the absolute `2 ^ 63` bound. Distinct from
+`gasLimitAdjustmentTag`: the fixtures name these separately, and a gas limit
+one above the bound can still sit inside the parent-relative window. -/
+def gasLimitTooBigTag : String := "GasLimitTooBigError"
+
+/-- `gasLimit` fails the parent-relative adjustment window or the minimum. -/
+def gasLimitAdjustmentTag : String := "GasLimitAdjustmentError"
+
+/-- The header's own `gasUsed` exceeds its own `gasLimit`. -/
+def gasUsedOverflowTag : String := "GasUsedOverflowError"
+
+/-- The block's computed gas used disagrees with the header's claim. Distinct
+from `gasUsedOverflowTag`: this one is only knowable after execution. -/
+def gasUsedMismatchTag : String := "GasUsedMismatchError"
+
+/-- The block is no newer than its parent. -/
+def timestampOlderThanParentTag : String := "TimestampOlderThanParentError"
+
+/-- The block number is not the parent's successor. -/
+def blockNumberTag : String := "BlockNumberError"
+
+/-- The base fee disagrees with the value computed from the parent. -/
+def baseFeePerGasTag : String := "BaseFeePerGasError"
+
+/-- A nonzero difficulty, which is impossible after Paris. -/
+def difficultyOverParisTag : String := "DifficultyOverParisError"
+
+/-- An ommers hash other than the empty-list hash, impossible after Paris. -/
+def ommersOverParisTag : String := "OmmersOverParisError"
+
+/-- Extra data longer than 32 bytes. -/
+def extraDataTooBigTag : String := "ExtraDataTooBigError"
+
+/-- The named parent is not the block this chain is being extended from, and
+the name is nonzero. -/
+def unknownParentTag : String := "UnknownParentError"
+
+/-- The named parent is the all-zero hash, which names no block. Separate from
+`unknownParentTag` because the fixture vocabulary separates them. -/
+def unknownParentZeroTag : String := "UnknownParentZeroError"
+
+/-- The computed post-state root disagrees with the header. -/
+def stateRootTag : String := "StateRootError"
+
+/-- The computed transactions root disagrees with the header. -/
+def transactionsRootTag : String := "TransactionsRootError"
+
+/-- The computed receipts root disagrees with the header. -/
+def receiptsRootTag : String := "ReceiptsRootError"
+
+/-- The computed logs bloom disagrees with the header. -/
+def logBloomTag : String := "LogBloomError"
+
+/-- The computed withdrawals root disagrees with the header. -/
+def withdrawalsRootTag : String := "WithdrawalsRootError"
+
+/-- A nonzero header nonce, which is impossible after Paris. -/
+def headerNonceTag : String := "HeaderNonceError"
+
+/-- The excess blob gas disagrees with the value computed from the parent. -/
+def excessBlobGasTag : String := "ExcessBlobGasError"
+
+/-- The computed blob gas used disagrees with the header. -/
+def blobGasUsedTag : String := "BlobGasUsedError"
+
+/-- The computed requests hash disagrees with the header. -/
+def requestsHashTag : String := "RequestsHashError"
+
+/-- Every block-rejection tag. The single source of truth for the distinctness
+checks, and for `isBlockException`. -/
+def blockExceptionTags : List String :=
+  [ gasLimitTooBigTag, gasLimitAdjustmentTag, gasUsedOverflowTag,
+    gasUsedMismatchTag, timestampOlderThanParentTag, blockNumberTag,
+    baseFeePerGasTag, difficultyOverParisTag, ommersOverParisTag,
+    extraDataTooBigTag, unknownParentTag, unknownParentZeroTag,
+    stateRootTag, transactionsRootTag, receiptsRootTag, logBloomTag,
+    withdrawalsRootTag, headerNonceTag, excessBlobGasTag, blobGasUsedTag,
+    requestsHashTag ]
+
+/-- Is this error one of the precise block-rejection reasons? -/
+def isBlockException (err : String) : Bool :=
+  List.any blockExceptionTags (hasErrorType err)
+
+-- The tags are distinct, and none is a prefix of another. `hasErrorType` reads
+-- a tag up to a fixed " : ", so a tag that prefixed another could be read as
+-- the wrong reason -- and one reason read as another is precisely the defect
+-- this vocabulary exists to remove.
+#guard blockExceptionTags.length = 21
+#guard blockExceptionTags.eraseDups.length = 21
+#guard blockExceptionTags.all fun t =>
+  (blockExceptionTags.filter fun u => t.isPrefixOf u).length = 1
+
+-- No tag is readable as the broad category it replaces, in either direction.
+#guard blockExceptionTags.all fun t => ¬ hasErrorType t "InvalidBlock"
+#guard ¬ isBlockException "InvalidBlock"
+#guard ¬ isBlockException "InvalidBlock : gas limit is wrong"
+
+-- `isBlockException` is a member here only as scaffolding. The old fixture
+-- oracle accepts a rejected block iff its error `isEthereumException` or
+-- `isRlpException`, so replacing a bare `"InvalidBlock"` with a precise tag
+-- would otherwise turn every currently-accepted invalid block into a failure
+-- for a reason that is the opposite of the truth -- the producer got *more*
+-- precise. This whole broad predicate is deleted once the exact-identity
+-- matcher becomes the oracle; the precision lives in the tags, not here.
 def isEthereumException (err : String) : Bool :=
   hasErrorType err "InvalidBlock" ||
+  isBlockException err ||
   isInvalidTransaction err
 
 def isRlpException (err : String) : Bool :=
@@ -939,6 +1057,20 @@ def rlpStructureError (name : String) (detail : String) : String :=
 def B8L.toRlpFixed (name : String) (n : Nat) (xs : B8L) : Except String B8L :=
   (xs.toFixed? n).toExcept
     s!"{rlpFixedWidthTag} : {name} must be exactly {n} bytes, but is {xs.length}"
+
+/-- A fixed-width 32-byte hash or root, as a `B256`. `B8L.toB256?` is already an
+exact-width decoder, so this adds the precise reason rather than a check. Note
+these fields are *bytes*, not scalars: a root may legitimately begin with a zero
+byte, so the canonical-scalar rule must not be applied to them. -/
+def B8L.toRlpHash (name : String) (xs : B8L) : Except String B256 :=
+  xs.toB256?.toExcept
+    s!"{rlpFixedWidthTag} : {name} must be exactly 32 bytes, but is {xs.length}"
+
+/-- A fixed-width 8-byte field, as a `B64`. Like `toRlpHash`, this is bytes
+rather than a scalar: the header nonce is eight bytes of zeroes, not empty. -/
+def B8L.toRlpFixedB64 (name : String) (xs : B8L) : Except String B64 :=
+  xs.toB64?.toExcept
+    s!"{rlpFixedWidthTag} : {name} must be exactly 8 bytes, but is {xs.length}"
 
 /-- The canonicality half of scalar checking, shared by every width. The
 overflow tag is a parameter because the width is what the official vocabulary
@@ -3950,29 +4082,44 @@ def BLT.toExStrHeader : BLT → Except String Header
       .b8s parentBeaconBlockRoot ::
       tail
     ) => do
-      let parentHash ← parentHash.toB256?.toExcept "parentHash to B256 conversion failed"
-      let ommersHash ← ommersHash.toB256?.toExcept "ommersHash to B256 conversion failed"
-      let coinbase ← coinbase.toAdr?.toExcept "coinbase to Adr conversion failed"
-      let stateRoot ← stateRoot.toB256?.toExcept "stateRoot to B256 conversion failed"
-      let txsRoot ← txsRoot.toB256?.toExcept "txsRoot to B256 conversion failed"
-      let receiptRoot ← receiptRoot.toB256?.toExcept "receiptRoot to B256 conversion failed"
-      let difficulty := difficulty.toNat
-      let number := number.toNat
-      let gasLimit := gasLimit.toNat
-      let gasUsed := gasUsed.toNat
-      let timestamp := timestamp.toNat
-      let prevRandao ← prevRandao.toB256?.toExcept "prevRandao to B256 conversion failed"
-      let nonce ← nonce.toB64?.toExcept "nonce to B64 conversion failed"
-      let baseFeePerGas := baseFeePerGas.toNat
-      let withdrawalsRoot ← withdrawalsRoot.toB256?.toExcept "withdrawalsRoot to B256 conversion failed"
-      let blobGasUsed := blobGasUsed.toNat
-      let excessBlobGas := excessBlobGas.toNat
-      let previousBeaconBlockRoot ← parentBeaconBlockRoot.toB256?.toExcept "parentBeaconBlockRoot to B256 conversion failed"
+      -- Every field is checked for shape before its value is converted. The
+      -- shapes are not uniform and the difference matters: hashes, roots, the
+      -- coinbase, the bloom and the nonce are *fixed-width bytes*, where a
+      -- leading zero is content; the integers are *canonical scalars*, where a
+      -- leading zero is malformed and zero is the empty string. Widths follow
+      -- execution-specs' header types -- `Uint`/`U256` for the numbers modelled
+      -- here as `Nat`, and `U64` for the two blob-gas fields, which is the one
+      -- place a header field carries the 64-bit overflow identity.
+      let parentHash ← parentHash.toRlpHash "header parentHash"
+      let ommersHash ← ommersHash.toRlpHash "header ommersHash"
+      let coinbase ← coinbase.toRlpAdr "header coinbase"
+      let stateRoot ← stateRoot.toRlpHash "header stateRoot"
+      let txsRoot ← txsRoot.toRlpHash "header transactionsRoot"
+      let receiptRoot ← receiptRoot.toRlpHash "header receiptRoot"
+      let bloom ← bloom.toRlpFixed "header bloom" 256
+      let difficulty ← difficulty.toRlpNat "header difficulty" 32
+      let number ← number.toRlpNat "header number" 32
+      let gasLimit ← gasLimit.toRlpNat "header gasLimit" 32
+      let gasUsed ← gasUsed.toRlpNat "header gasUsed" 32
+      let timestamp ← timestamp.toRlpNat "header timestamp" 32
+      let prevRandao ← prevRandao.toRlpHash "header prevRandao"
+      let nonce ← nonce.toRlpFixedB64 "header nonce"
+      let baseFeePerGas ← baseFeePerGas.toRlpNat "header baseFeePerGas" 32
+      let withdrawalsRoot ← withdrawalsRoot.toRlpHash "header withdrawalsRoot"
+      let blobGasUsed := (← blobGasUsed.toRlpB64 "header blobGasUsed").toNat
+      let excessBlobGas := (← excessBlobGas.toRlpB64 "header excessBlobGas").toNat
+      let previousBeaconBlockRoot ←
+        parentBeaconBlockRoot.toRlpHash "header parentBeaconBlockRoot"
+      -- The requests hash is optional in shape, but exactly 32 bytes when
+      -- present: an absent field and a malformed one are different failures.
       let requestsHash : Option B256 ←
         match tail with
         | [] => .ok none
-        | [.b8s requestsHash] => requestsHash.toB256?.toExcept "requestsHash conversion failed"
-        | _ => .error "BLT to Header conversion failed, incorrect list length"
+        | [.b8s requestsHash] =>
+          (requestsHash.toRlpHash "header requestsHash").map some
+        | _ =>
+          .error <| rlpStructureError "header"
+            s!"expected 20 or 21 fields, but found {20 + tail.length}"
       .ok {
         parentHash := parentHash
         ommersHash := ommersHash
@@ -3997,7 +4144,8 @@ def BLT.toExStrHeader : BLT → Except String Header
         requestsHash := requestsHash
       }
   | _ =>
-    .error "BLT to Header conversion failed, expected a list"
+    .error <| rlpStructureError "header"
+      "expected a list of 20 or 21 byte-string fields"
 
 def Block.toStrings (block : Block) : List String :=
   let aux : B8L ⊕ Tx → List String
@@ -4017,19 +4165,70 @@ def calculateExcessBlobGas (parentHeader : Header) : Nat :=
     parentHeader.excessBlobGas + parentHeader.blobGasUsed
   parentBlobGas - targetBlobGasPerBlock
 
-abbrev checkGasLimit (gasLimit parentGasLimit : Nat) : Prop :=
+/-- The absolute upper bound on a block gas limit. A gas limit is a 63-bit
+quantity: `2 ^ 63` and above is out of range no matter what the parent's limit
+was, which is why the fixtures name it separately from a limit that merely
+moved too far from its parent. -/
+def gasLimitMaximum : Nat := 2 ^ 63
+
+/-- Check a block's gas limit against the absolute bound and against its
+parent, reporting *which* rule failed.
+
+The absolute bound is tested first, and that order is the point: a limit just
+above `2 ^ 63` can still sit inside the parent-relative window (it does exactly
+that when the parent's limit is `2 ^ 63 - 1`), so testing the window first would
+report the adjustment rule for a block whose real defect is an out-of-range gas
+limit -- the right verdict for the wrong reason. -/
+def checkGasLimit (gasLimit parentGasLimit : Nat) : Except String Unit := do
+  if gasLimit ≥ gasLimitMaximum then
+    .error
+      s!"{gasLimitTooBigTag} : gas limit = {gasLimit} ≥ \
+         absolute maximum = {gasLimitMaximum}"
   let maxAdjustmentDelta := parentGasLimit / gasLimitAdjustmentFactor
-  gasLimit < parentGasLimit + maxAdjustmentDelta ∧
-  parentGasLimit - maxAdjustmentDelta < gasLimit ∧
-  gasLimitMinimum ≤ gasLimit
+  if gasLimit ≥ parentGasLimit + maxAdjustmentDelta then
+    .error
+      s!"{gasLimitAdjustmentTag} : gas limit = {gasLimit} ≥ parent gas limit \
+         = {parentGasLimit} + max adjustment delta = {maxAdjustmentDelta}"
+  if gasLimit ≤ parentGasLimit - maxAdjustmentDelta then
+    .error
+      s!"{gasLimitAdjustmentTag} : gas limit = {gasLimit} ≤ parent gas limit \
+         = {parentGasLimit} - max adjustment delta = {maxAdjustmentDelta}"
+  if gasLimit < gasLimitMinimum then
+    .error
+      s!"{gasLimitAdjustmentTag} : gas limit = {gasLimit} < \
+         minimum = {gasLimitMinimum}"
+
+--------------- GAS-LIMIT BOUNDARY CHECKS ----------------
+
+-- The absolute bound, at its exact boundary. These are the real numbers from
+-- `bcInvalidHeaderTest/GasLimitHigherThan2p63m1.json`, whose genesis gas limit
+-- is `2 ^ 63 - 1` and whose block claims `2 ^ 63`. Note the parent-relative
+-- window *accepts* that block -- one step up from a parent of `2 ^ 63 - 1` is
+-- well within a delta of `(2 ^ 63 - 1) / 1024` -- so the absolute bound is the
+-- only rule that rejects it, and it must be the one that reports.
+#guard hasTag gasLimitTooBigTag (checkGasLimit (2 ^ 63) (2 ^ 63 - 1))
+#guard ¬ hasTag gasLimitAdjustmentTag (checkGasLimit (2 ^ 63) (2 ^ 63 - 1))
+-- One below the bound, same parent: accepted. This is the maximum gas limit any
+-- valid block in the corpus carries, so the bound may not be one lower.
+#guard (checkGasLimit (2 ^ 63 - 1) (2 ^ 63 - 1)).toOption.isSome
+-- Far above the bound, where the window would also reject: still too big.
+#guard hasTag gasLimitTooBigTag (checkGasLimit (2 ^ 64) 3141592)
+
+-- The parent-relative window and the minimum, each at its boundary, all
+-- reporting the adjustment rule rather than the absolute one.
+#guard (checkGasLimit 3141592 3141592).toOption.isSome              -- unchanged
+#guard hasTag gasLimitAdjustmentTag (checkGasLimit (3141592 + 3067) 3141592)
+#guard (checkGasLimit (3141592 + 3066) 3141592).toOption.isSome     -- just inside
+#guard hasTag gasLimitAdjustmentTag (checkGasLimit (3141592 - 3067) 3141592)
+#guard (checkGasLimit (3141592 - 3066) 3141592).toOption.isSome     -- just inside
+#guard hasTag gasLimitAdjustmentTag (checkGasLimit 4999 5000)       -- below minimum
+#guard (checkGasLimit gasLimitMinimum 5000).toOption.isSome
 
 def calculateBaseFeePerGas
   (blockGasLimit parentGasLimit parentGasUsed parentBaseFeePerGas : Nat) :
   Except String Nat := do
   let parentGasTarget := parentGasLimit / elasticityMultiplier
-  .assert
-    (checkGasLimit blockGasLimit parentGasLimit)
-    "InvalidBlock"
+  checkGasLimit blockGasLimit parentGasLimit
   if parentGasUsed = parentGasTarget
   then .ok parentBaseFeePerGas
   else
@@ -4052,33 +4251,63 @@ def calculateBaseFeePerGas
 def validateHeader (chain : BlockChain) (header : Header) :
   Except String Unit := do
   let parent ← chain.blocks.getLast?.toExcept "No parent block found"
+  let blockParentHash := (Header.toBLT parent.header).toB8L.keccak
+  -- Parentage is settled first. Every check below reads the parent's header, so
+  -- a block naming a parent this chain does not end with is not a block with a
+  -- bad timestamp or a bad base fee -- it is a block that cannot be placed at
+  -- all, and reporting any later rule for it would name the wrong defect. The
+  -- all-zero hash is called out separately because it names no block at all,
+  -- rather than naming some block this chain has not got.
+  if header.parentHash ≠ blockParentHash then do
+    if header.parentHash = 0 then
+      .error
+        s!"{unknownParentZeroTag} : parent hash is the all-zero hash, \
+           which names no block"
+    .error
+      s!"{unknownParentTag} : parent hash = {header.parentHash} names no known \
+         block; this chain ends at {blockParentHash}"
   let expectedBaseFeePerGas ←
     calculateBaseFeePerGas
       header.gasLimit
       parent.header.gasLimit
       parent.header.gasUsed
       parent.header.baseFeePerGas
-  let blockParentHash := (Header.toBLT parent.header).toB8L.keccak
   if header.excessBlobGas ≠ calculateExcessBlobGas parent.header then do
-    .error "InvalidBlock : ExcessBlobGas does not match expected value"
+    .error
+      s!"{excessBlobGasTag} : excess blob gas = {header.excessBlobGas} ≠ \
+         expected = {calculateExcessBlobGas parent.header}"
   if header.gasUsed > header.gasLimit then do
-    .error s!"InvalidBlock : gas used = {header.gasUsed} > gas limit = {header.gasLimit}"
+    .error
+      s!"{gasUsedOverflowTag} : gas used = {header.gasUsed} > \
+         gas limit = {header.gasLimit}"
   if expectedBaseFeePerGas ≠ header.baseFeePerGas then do
-    .error "InvalidBlock : BaseFeePerGas does not match expected value"
+    .error
+      s!"{baseFeePerGasTag} : base fee per gas = {header.baseFeePerGas} ≠ \
+         expected = {expectedBaseFeePerGas}"
   if header.timestamp ≤ parent.header.timestamp then do
-    .error "InvalidBlock : Timestamp does not match expected value"
+    .error
+      s!"{timestampOlderThanParentTag} : timestamp = {header.timestamp} ≤ \
+         parent timestamp = {parent.header.timestamp}"
   if header.number ≠ parent.header.number + 1 then do
-    .error "InvalidBlock : number does not match expected value"
+    .error
+      s!"{blockNumberTag} : number = {header.number} ≠ \
+         parent number + 1 = {parent.header.number + 1}"
   if header.extraData.length > 32 then do
-    .error "InvalidBlock : ExtraData exceeds 32 bytes"
+    .error
+      s!"{extraDataTooBigTag} : extra data is {header.extraData.length} bytes, \
+         exceeding the 32-byte maximum"
   if header.difficulty ≠ 0 then do
-    .error "InvalidBlock : Difficulty does not match expected value"
+    .error
+      s!"{difficultyOverParisTag} : difficulty = {header.difficulty} ≠ 0, \
+         which is impossible after Paris"
   if header.nonce ≠ 0 then do
-    .error "InvalidBlock : nonce does not match expected value"
+    .error
+      s!"{headerNonceTag} : nonce = {header.nonce} ≠ 0, \
+         which is impossible after Paris"
   if header.ommersHash ≠ emptyOmmerHash then do
-    .error s!"InvalidBlock : expected ommers hash = {emptyOmmerHash}, computed ommers hash"
-  if header.parentHash ≠ blockParentHash then do
-    .error "InvalidBlock : parentHash does not match expected value"
+    .error
+      s!"{ommersOverParisTag} : ommers hash = {header.ommersHash} ≠ \
+         empty-list hash = {emptyOmmerHash}, which is impossible after Paris"
 
 structure MsgCallOutput : Type where
   gasLeft : Nat
@@ -5151,21 +5380,36 @@ def stateTransitionChecks (bout : BlockOutput) (header : Header)
     (blockLogsBloom : B8L) (withdrawalsRoot requestsHash : B256) :
     Except String Unit := do
   if bout.blockGasUsed ≠ header.gasUsed then
-    .error s!"InvalidBlock : computed block gas used = {bout.blockGasUsed} ≠ expected block gas used = {header.gasUsed}"
+    .error
+      s!"{gasUsedMismatchTag} : computed block gas used = {bout.blockGasUsed} ≠ \
+         header block gas used = {header.gasUsed}"
   if transactionsRoot ≠ header.txsRoot then
-    .error s!"InvalidBlock : computed transactions root = {transactionsRoot} ≠ expected transactions root = {header.txsRoot}"
+    .error
+      s!"{transactionsRootTag} : computed transactions root = {transactionsRoot} \
+         ≠ header transactions root = {header.txsRoot}"
   if blockStateRoot ≠ header.stateRoot then
-    .error "InvalidBlock : state root mismatch"
+    .error
+      s!"{stateRootTag} : computed state root = {blockStateRoot} ≠ \
+         header state root = {header.stateRoot}"
   if receiptRoot ≠ header.receiptRoot then
-    .error "InvalidBlock : receipt root mismatch"
+    .error
+      s!"{receiptsRootTag} : computed receipts root = {receiptRoot} ≠ \
+         header receipts root = {header.receiptRoot}"
   if blockLogsBloom ≠ header.bloom then
-    .error "InvalidBlock : bloom mismatch"
+    .error
+      s!"{logBloomTag} : computed logs bloom ≠ header logs bloom"
   if withdrawalsRoot ≠ header.withdrawalsRoot then
-    .error "InvalidBlock : withdrawals root mismatch"
+    .error
+      s!"{withdrawalsRootTag} : computed withdrawals root = {withdrawalsRoot} ≠ \
+         header withdrawals root = {header.withdrawalsRoot}"
   if bout.blobGasUsed ≠ header.blobGasUsed then
-    .error "InvalidBlock : blob gas used mismatch"
+    .error
+      s!"{blobGasUsedTag} : computed blob gas used = {bout.blobGasUsed} ≠ \
+         header blob gas used = {header.blobGasUsed}"
   if some requestsHash ≠ header.requestsHash then
-    .error s!"InvalidBlock : expected requests hash = {header.requestsHash}, computed requests hash = {requestsHash}"
+    .error
+      s!"{requestsHashTag} : computed requests hash = {requestsHash} ≠ \
+         header requests hash = {header.requestsHash}"
 
 def initBenvStat (chain : BlockChain) (header : Header) : BenvStat :=
   {

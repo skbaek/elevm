@@ -204,15 +204,43 @@ def classifyWith (routes : List ActualRoute) (err : String) : Option FixtureExce
 
 /-- The routes from ELeVM's actual errors to canonical identities.
 
-Deliberately empty at this step. Registering a route is a claim that a specific
-producer raises a specific official identity, and most producers are still
-ambiguous: they raise bare `"InvalidBlock"` or share one internal string between
-two official identities. Making the producers precise, and filling this table
-under a coverage check, is the later strict-decoding and classification work.
-Until then an empty table means `classify` recognizes nothing, which is the
-fail-closed direction -- the old oracle stays wired, so no fixture's
-classification depends on this yet. -/
-def actualRoutes : List ActualRoute := []
+Registering a route is a claim that a specific producer raises a specific
+official identity. The header and post-transition producers are now precise
+enough for that claim: each rejection reason in `blockExceptionTags` is raised
+at exactly one site, so each maps to one identity. The transaction identities,
+and the three RLP identities, are still routed by later work -- their producers
+remain ambiguous, and an unroutable error fails closed rather than being waved
+through.
+
+Four block tags are deliberately absent, and their absence is the fail-closed
+choice rather than an oversight: `headerNonceTag`, `excessBlobGasTag`,
+`blobGasUsedTag` and `requestsHashTag` are real consensus rules that the Prague
+fixture vocabulary has no identity for. A block rejected for one of them cannot
+be scored against any expected identity, so it must be reported as an unknown
+actual error -- not silently attached to whichever identity looks closest. -/
+def actualRoutes : List ActualRoute :=
+  [ (gasLimitTooBigTag, blockGasLimitTooBig),
+    (gasLimitAdjustmentTag, blockInvalidGasLimit),
+    (gasUsedOverflowTag, blockGasUsedOverflow),
+    (gasUsedMismatchTag, blockInvalidGasUsed),
+    (timestampOlderThanParentTag, blockInvalidBlockTimestampOlderThanParent),
+    (blockNumberTag, blockInvalidBlockNumber),
+    (baseFeePerGasTag, blockInvalidBaseFeePerGas),
+    (difficultyOverParisTag, blockImportImpossibleDifficultyOverParis),
+    (ommersOverParisTag, blockImportImpossibleUnclesOverParis),
+    (extraDataTooBigTag, blockExtraDataTooBig),
+    (unknownParentTag, blockUnknownParent),
+    (unknownParentZeroTag, blockUnknownParentZero),
+    (stateRootTag, blockInvalidStateRoot),
+    (transactionsRootTag, blockInvalidTransactionsRoot),
+    (receiptsRootTag, blockInvalidReceiptsRoot),
+    (logBloomTag, blockInvalidLogBloom),
+    (withdrawalsRootTag, blockInvalidWithdrawalsRoot) ]
+
+/-- The block tags with no fixture identity, listed so the coverage checks can
+assert that every block tag is either routed or knowingly unrouted. -/
+def unroutedBlockTags : List String :=
+  [ headerNonceTag, excessBlobGasTag, blobGasUsedTag, requestsHashTag ]
 
 /-- Classify an actual error against the registered routes. -/
 def classify (err : String) : Option FixtureException :=
@@ -410,11 +438,60 @@ private def sampleRoutes : List ActualRoute :=
 #guard (classifyWith sampleRoutes "DecodingError : unexpected list length").isNone
 #guard (classifyWith sampleRoutes "EncodingError").isNone
 
--- `actualRoutes` is empty at this step, so `classify` recognizes nothing and
--- `matches` is uniformly false: this module is not yet authoritative.
-#guard actualRoutes.isEmpty
+-- The real route table: the block half is now registered, the transaction half
+-- is not. `classify` still recognizes nothing it has not been told about.
 #guard (classify "InvalidBlock").isNone
 #guard (classify "InvalidGasLimitAbsolute").isNone
+
+-- Each route key is a real producer tag, each is registered once, and each maps
+-- to one identity. A key registered twice, or two keys sharing an identity,
+-- would make "the one canonical identity" a fiction.
+#guard actualRoutes.length = 17
+#guard (actualRoutes.map Prod.fst).eraseDups.length = 17
+#guard (actualRoutes.map Prod.snd).eraseDups.length = 17
+#guard actualRoutes.all fun r => blockExceptionTags.contains r.fst
+
+-- Every block tag is either routed or knowingly unrouted -- a new rejection
+-- reason cannot be added without landing in one list or the other.
+#guard unroutedBlockTags.length = 4
+#guard unroutedBlockTags.all fun t => blockExceptionTags.contains t
+#guard blockExceptionTags.all fun t =>
+  (actualRoutes.map Prod.fst).contains t || unroutedBlockTags.contains t
+#guard unroutedBlockTags.all fun t => ¬ (actualRoutes.map Prod.fst).contains t
+
+-- Every producer tag classifies to its own identity, bare and with detail.
+#guard classify gasLimitTooBigTag == some blockGasLimitTooBig
+#guard classify s!"{gasLimitTooBigTag} : gas limit = 9223372036854775808 ≥ \
+  absolute maximum = 9223372036854775808" == some blockGasLimitTooBig
+#guard classify gasLimitAdjustmentTag == some blockInvalidGasLimit
+#guard classify s!"{gasLimitAdjustmentTag} : detail" == some blockInvalidGasLimit
+#guard classify s!"{unknownParentTag} : detail" == some blockUnknownParent
+#guard classify s!"{unknownParentZeroTag} : detail" == some blockUnknownParentZero
+#guard classify s!"{gasUsedOverflowTag} : detail" == some blockGasUsedOverflow
+#guard classify s!"{gasUsedMismatchTag} : detail" == some blockInvalidGasUsed
+#guard classify s!"{ommersOverParisTag} : detail"
+  == some blockImportImpossibleUnclesOverParis
+#guard classify s!"{difficultyOverParisTag} : detail"
+  == some blockImportImpossibleDifficultyOverParis
+#guard classify s!"{stateRootTag} : detail" == some blockInvalidStateRoot
+
+-- The pairs the fixtures insist are different reasons really do land on
+-- different identities. These are the distinctions the whole step exists for:
+-- an out-of-range gas limit is not a gas limit that drifted from its parent,
+-- a header claiming more gas than it allows is not a header whose claim
+-- disagrees with execution, and a zero parent hash is not an unknown one.
+#guard classify gasLimitTooBigTag != classify gasLimitAdjustmentTag
+#guard classify gasUsedOverflowTag != classify gasUsedMismatchTag
+#guard classify unknownParentTag != classify unknownParentZeroTag
+
+-- The knowingly unrouted rules classify to nothing, so a block rejected for one
+-- of them fails loudly instead of borrowing a neighbouring identity.
+#guard unroutedBlockTags.all fun t => (classify t).isNone
+#guard unroutedBlockTags.all fun t => (classify s!"{t} : detail").isNone
+
+-- The transaction and RLP halves are still unrouted; later steps fill them.
+#guard (classify rlpStructureTag).isNone
+#guard (classify rlpFieldOverflow64Tag).isNone
 
 -- The matcher is set membership on the one classified identity -- never
 -- "some failure occurred". Shown against the synthetic table so the semantics
@@ -436,8 +513,26 @@ private def matchesWith (routes : List ActualRoute)
 -- An empty expected set matches nothing; `parseExpectation` cannot produce one.
 #guard ¬ matchesWith sampleRoutes [] "InvalidGasLimitAbsolute"
 
--- With the real (empty) route table, nothing matches yet.
+-- The real route table, end to end. An unregistered error still matches
+-- nothing, however broad the expected set.
 #guard ¬ matchesSet all "InvalidGasLimitAbsolute"
+#guard ¬ matchesSet all "InvalidBlock : gas limit is wrong"
+
+-- The `GasLimitHigherThan2p63m1` case, from producer to verdict: the real error
+-- text `checkGasLimit` raises for that fixture's numbers, matched against the
+-- expectation string the fixture actually carries.
+#guard matchesSet [blockGasLimitTooBig]
+  s!"{gasLimitTooBigTag} : gas limit = 9223372036854775808 ≥ \
+     absolute maximum = 9223372036854775808"
+#guard
+  (matchesExpectation "BlockException.GASLIMIT_TOO_BIG"
+    s!"{gasLimitTooBigTag} : gas limit = 9223372036854775808 ≥ \
+       absolute maximum = 9223372036854775808").toOption
+  == some blockGasLimitTooBig
+-- The same rejection against the *adjustment* expectation is still a failure:
+-- the block was rejected, but not for the reason the fixture names.
+#guard (matchesExpectation "BlockException.INVALID_GASLIMIT"
+  s!"{gasLimitTooBigTag} : detail").toOption.isNone
 
 -- `matchesExpectation` fails closed on every channel: unknown expected token,
 -- unknown actual error, and a classified-but-unexpected identity.
