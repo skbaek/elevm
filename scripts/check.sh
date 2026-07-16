@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # Fixture-test harness for elevm (REFACTOR.md Phase 0, step 0.1).
 #
-# Usage: scripts/check.sh (--depth | --smoke | --full | --dir <path>) [--rebase] [--no-build]
+# Usage: scripts/check.sh (--depth | --smoke | --full | --patch | --rlp4 | --dir <path>) [--rebase] [--no-build]
 #
 #   --depth       run the fuel/call-depth stress set (scripts/depth-tests.txt)
 #   --smoke       run the smoke set (scripts/smoke-tests.txt)
 #   --full        run every .json fixture under the fixture root
+#   --patch       run the patch-plan target set (scripts/patch-tests.txt): the
+#                 ten historical FAIL files plus CALLBlake2f_MaxRounds.json
+#   --rlp4        run the four invalid-RLP/header files (scripts/rlp4-tests.txt),
+#                 a subset of --patch
 #   --dir <path>  run every .json fixture under <path> (must be inside the
 #                 fixture root); ad hoc — if no baseline-dir.txt exists, the
 #                 gate passes iff every file PASSes
 #   --rebase      accept the current results as the new committed baseline
+#                 (rejected for --patch/--rlp4: their desired result is fixed)
 #   --no-build    skip `lake build elevm`
+#
+# --patch and --rlp4 are target gates, not baseline-comparison tiers: each
+# succeeds if and only if every listed file is PASS. They have no baseline and
+# never rebase. Their reports additionally record per-file elapsed wall time.
 #
 # Environment:
 #   ELEVM_FIXTURES  fixture root (default:
@@ -38,7 +47,7 @@ TIMEOUT="${ELEVM_TIMEOUT:-100}"
 BIN="$ROOT/.lake/build/bin/elevm"
 
 usage() {
-  echo "usage: scripts/check.sh (--depth | --smoke | --full | --dir <path>) [--rebase] [--no-build]" >&2
+  echo "usage: scripts/check.sh (--depth | --smoke | --full | --patch | --rlp4 | --dir <path>) [--rebase] [--no-build]" >&2
   exit 2
 }
 
@@ -48,7 +57,7 @@ REBASE=0
 BUILD=1
 while [ $# -gt 0 ]; do
   case "$1" in
-    --depth|--smoke|--full) TIER="${1#--}" ;;
+    --depth|--smoke|--full|--patch|--rlp4) TIER="${1#--}" ;;
     --dir)
       TIER="dir"
       shift
@@ -63,6 +72,17 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$TIER" ] || usage
 
+# Target-gate tiers succeed iff every listed file is PASS; they have no
+# baseline and never rebase.
+case "$TIER" in
+  patch|rlp4) IS_TARGET=1 ;;
+  *)          IS_TARGET=0 ;;
+esac
+if [ "$IS_TARGET" -eq 1 ] && [ "$REBASE" -eq 1 ]; then
+  echo "usage error: --rebase is not supported for the $TIER target gate; its desired result is fixed at all-PASS" >&2
+  exit 2
+fi
+
 if [ ! -d "$FIXTURES" ]; then
   echo "REGRESSION — $TIER: fixture root not found: $FIXTURES"
   exit 1
@@ -70,7 +90,7 @@ fi
 
 # Assemble the file list (paths relative to the fixture root, sorted).
 case "$TIER" in
-  depth|smoke)
+  depth|smoke|patch|rlp4)
     LIST_FILE="$SCRIPT_DIR/$TIER-tests.txt"
     if [ ! -f "$LIST_FILE" ]; then
       echo "REGRESSION — $TIER: file list not found: $LIST_FILE"
@@ -128,11 +148,14 @@ I=0
 while IFS= read -r REL; do
   [ -n "$REL" ] || continue
   I=$((I + 1))
+  START="$(perl -MTime::HiRes=time -e 'printf "%.3f", time')"
   # alarm(2) persists across exec: when the timeout fires, SIGALRM kills the
   # exec'd elevm (exit status 128 + 14 = 142).
   perl -e 'alarm shift @ARGV; exec @ARGV' "$TIMEOUT" "$BIN" "$FIXTURES/$REL" \
     > /dev/null 2>&1
   RC=$?
+  ELAPSED="$(perl -e 'printf "%.2f", $ARGV[1] - $ARGV[0]' \
+    "$START" "$(perl -MTime::HiRes=time -e 'printf "%.3f", time')")"
   if [ "$RC" -eq 0 ]; then
     CLS=PASS; NPASS=$((NPASS + 1))
   elif [ "$RC" -eq 142 ]; then
@@ -140,13 +163,28 @@ while IFS= read -r REL; do
   else
     CLS=FAIL; NFAIL=$((NFAIL + 1))
   fi
-  printf '%s\t%s\n' "$CLS" "$REL" >> "$REPORT"
-  printf '[%d/%d] %s %s\n' "$I" "$TOTAL" "$CLS" "$REL" >&2
+  if [ "$IS_TARGET" -eq 1 ]; then
+    printf '%s\t%ss\t%s\n' "$CLS" "$ELAPSED" "$REL" >> "$REPORT"
+    printf '[%d/%d] %s %ss %s\n' "$I" "$TOTAL" "$CLS" "$ELAPSED" "$REL" >&2
+  else
+    printf '%s\t%s\n' "$CLS" "$REL" >> "$REPORT"
+    printf '[%d/%d] %s %s\n' "$I" "$TOTAL" "$CLS" "$REL" >&2
+  fi
 done <<EOF
 $FILES
 EOF
 
 SUMMARY="$NPASS PASS, $NFAIL FAIL, $NTIMEOUT TIMEOUT"
+
+# Target gates: fixed all-PASS end condition, no baseline, no rebase.
+if [ "$IS_TARGET" -eq 1 ]; then
+  if [ "$NFAIL" -eq 0 ] && [ "$NTIMEOUT" -eq 0 ]; then
+    echo "OK — $TIER: $NPASS/$TOTAL PASS ($SUMMARY)"
+    exit 0
+  fi
+  echo "RED — $TIER: $NPASS/$TOTAL PASS, target not met ($SUMMARY); see $REPORT"
+  exit 1
+fi
 
 if [ "$REBASE" -eq 1 ]; then
   cp "$REPORT" "$BASELINE"
