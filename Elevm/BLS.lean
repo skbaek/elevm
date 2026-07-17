@@ -109,6 +109,26 @@ def g1MsmSum (pairs : List (BLSP × Nat)) : BLSP :=
     | (p, s) :: ps => aux (acc + p.mulBy s) ps
   aux ⟨0, 0⟩ pairs
 
+def decodeG2MsmPairs (data : B8L) : Except String (List (BLSP2 × Nat)) :=
+  let rec aux (fuel : Nat) (acc : List (BLSP2 × Nat)) (bs : B8L) : Except String (List (BLSP2 × Nat)) :=
+    match fuel with
+    | 0 => .ok acc.reverse
+    | fuel' + 1 =>
+      if bs.isEmpty then .ok acc.reverse
+      else if bs.length < 288 then
+        .error "InvalidParameter : remaining bytes less than 288"
+      else do
+        let p ← B8L.toExStrBLSP2 (bs.take 256) true
+        let s := B8L.toNat ((bs.drop 256).take 32)
+        aux fuel' ((p, s) :: acc) (bs.drop 288)
+  aux data.length [] data
+
+def g2MsmSum (pairs : List (BLSP2 × Nat)) : BLSP2 :=
+  let rec aux (acc : BLSP2) : List (BLSP2 × Nat) → BLSP2
+    | [] => acc
+    | (p, s) :: ps => aux (acc + p.mulBy s) ps
+  aux ⟨0, 0⟩ pairs
+
 -- py_ecc.bls12_381.bls12_381_curve.G1
 def blsG1GenX : Nat :=
   3685416753713387016781088315183077757961620795782546409894578378688607592378376318836054947676345821548104185464507
@@ -153,3 +173,4 @@ def blsG2Generator : BLSP2 :=
 #guard blsG2Generator.isOnCurve
 #guard (B8L.toExStrBLSP2 (BLSP2.toB8L blsG2Generator)).toOption = some blsG2Generator
 #guard BLSP2.toB8L (⟨0, 0⟩ : BLSP2) = List.replicate 256 (0 : B8)
+#guard (blsG2Generator.mulBy blsCurveOrder) = ⟨0, 0⟩

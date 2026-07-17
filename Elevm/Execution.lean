@@ -692,6 +692,7 @@ def perEmptyAccountCost := 25000
 def perAuthBaseCost := 12500
 def txBaseCost : Nat := 21000
 def g1MsmLengthPerPair : Nat := 160
+def g2MsmLengthPerPair : Nat := 288
 def g1MaxDiscount : Nat := 519
 def g2MaxDiscount : Nat := 524
 
@@ -3170,15 +3171,16 @@ def executeBls12G2Add (evm : Evm) : PrecompResult :=
 -- def bls12_g2_msm
 def executeBls12G2Msm (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
-  -- TODO: use g2MsmLengthPerPair := 288 in Step 5
-  if data.length = 0 ∨ data.length % g1MsmLengthPerPair ≠ 0 then
+  if data.length = 0 ∨ data.length % g2MsmLengthPerPair ≠ 0 then
     .error s!"InvalidParameter : {data.length} is not a valid input length" 0
   else
-    let k := data.length / g1MsmLengthPerPair
+    let k := data.length / g2MsmLengthPerPair
     let discount := List.getD g2KDiscount (k - 1) g2MaxDiscount
     let gasCost := (k * gasBlsG2Mul * discount) / 1000
     PrecompResult.chargeGas gasCost evm fun () =>
-      .error "BLS12 G2 msm not implemented yet" gasCost
+      match decodeG2MsmPairs data with
+      | .ok pairs => .ok gasCost (g2MsmSum pairs).toB8L
+      | .error _ => .error "OutOfGasError" gasCost
 
 -- def bls12_pairing(evm : Evm) -> None :
 def executeBls12Pairing (evm : Evm) : PrecompResult :=
