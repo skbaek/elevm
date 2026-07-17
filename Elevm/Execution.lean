@@ -3163,7 +3163,9 @@ def executeBls12G2Add (evm : Evm) : PrecompResult :=
   if data.length ≠ 512 then .error "InvalidParameter" 0
   else
     PrecompResult.chargeGas gasBlsG2Add evm fun () =>
-      .error "BLS12 G2 add not implemented yet" gasBlsG2Add
+      match B8L.toExStrBLSP2 (data.take 256), B8L.toExStrBLSP2 (data.drop 256) with
+      | .ok p1, .ok p2 => .ok gasBlsG2Add (BLSP2.toB8L (p1 + p2))
+      | _, _ => .error "OutOfGasError" gasBlsG2Add
 
 -- def bls12_g2_msm
 def executeBls12G2Msm (evm : Evm) : PrecompResult :=

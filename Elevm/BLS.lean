@@ -21,6 +21,19 @@ abbrev BLSF : Type := FinField blsPrime
 -- Curve is y^2 = x^3 + 4 (py_ecc.bls12_381.bls12_381_curve.b)
 abbrev BLSP : Type := EllipticCurve BLSF (0 : BLSF) (4 : BLSF)
 
+-- GaloisField stores polynomial coefficients from highest degree to the
+-- constant coefficient.  Thus [c1, c0] represents c0 + c1*u, while the
+-- EIP-2537 codec exposes the py_ecc order c0 || c1.  The modulus is
+-- u^2 + 1, matching py_ecc's FQ2_MODULUS_COEFFS = (1, 0).
+abbrev BLSF2 : Type := GaloisField blsPrime [1, 0, 1]
+
+def BLSF2.mk (c0 c1 : Nat) : BLSF2 :=
+  ⟨trimZero [FinField.ofNat c1, FinField.ofNat c0]⟩
+
+def blsB2 : BLSF2 := BLSF2.mk 4 4
+
+abbrev BLSP2 : Type := EllipticCurve BLSF2 (0 : BLSF2) blsB2
+
 -- def bytes_to_fq(data : Bytes) -> FQ:
 def B8L.toExStrBLSF (data : B8L) : Except String BLSF := do
   if data.length ≠ 64 then
@@ -46,6 +59,35 @@ def B8L.toExStrBLSP (data : B8L) (subgroupCheck : Bool := false) : Except String
 -- def g1_to_bytes(g1_point : Point3D[FQ]) -> Bytes:
 def BLSP.toB8L (p : BLSP) : B8L :=
   p.x.val.toB8L.pack 64 ++ p.y.val.toB8L.pack 64
+
+def B8L.toExStrBLSF2 (data : B8L) : Except String BLSF2 := do
+  if data.length ≠ 128 then
+    .error "InvalidParameter : input should be 128 bytes long"
+  let c0 ← B8L.toExStrBLSF (data.take 64)
+  let c1 ← B8L.toExStrBLSF (data.drop 64)
+  pure ⟨trimZero [c1, c0]⟩
+
+-- def bytes_to_g2(data : Bytes) -> Point3D[FQ2]:
+def B8L.toExStrBLSP2 (data : B8L) (subgroupCheck : Bool := false) : Except String BLSP2 := do
+  if data.length ≠ 256 then
+    .error "InvalidParameter : input should be 256 bytes long"
+  let x ← B8L.toExStrBLSF2 (data.take 128)
+  let y ← B8L.toExStrBLSF2 (data.drop 128)
+  let p ← (EllipticCurve.mk? x y).toExcept
+    "InvalidParameter : point is not on curve"
+  if subgroupCheck then
+    if (p.mulBy blsCurveOrder) ≠ ⟨0, 0⟩ then
+      .error "InvalidParameter : subgroup check failed"
+  pure p
+
+def BLSF2.toB8L (x : BLSF2) : B8L :=
+  let cs := List.ekatD 2 x.val (0 : BLSF)
+  let c1 := cs[0]!
+  let c0 := cs[1]!
+  c0.val.toB8L.pack 64 ++ c1.val.toB8L.pack 64
+
+def BLSP2.toB8L (p : BLSP2) : B8L :=
+  p.x.toB8L ++ p.y.toB8L
 
 def decodeG1MsmPairs (data : B8L) : Except String (List (BLSP × Nat)) :=
   let rec aux (fuel : Nat) (acc : List (BLSP × Nat)) (bs : B8L) : Except String (List (BLSP × Nat)) :=
@@ -93,3 +135,21 @@ def blsG1GenDouble : BLSP := ⟨FinField.ofNat blsG1GenDoubleX, FinField.ofNat b
   (B8L.toExStrBLSP (List.replicate 128 (0 : B8))).toOption = some (⟨0, 0⟩ : BLSP)
 #guard BLSP.toB8L (⟨0, 0⟩ : BLSP) = List.replicate 128 (0 : B8)
 #guard (blsG1Generator.mulBy blsCurveOrder) = ⟨0, 0⟩
+
+-- py_ecc.bls12_381.bls12_381_curve.G2.  Its FQ2 coefficients are in the
+-- c0, c1 order used by the EIP codec.
+def blsG2GenX0 : Nat :=
+  352701069587466618187139116011060144890029952792775240219908644239793785735715026873347600343865175952761926303160
+def blsG2GenX1 : Nat :=
+  3059144344244213709971259814753781636986470325476647558659373206291635324768958432433509563104347017837885763365758
+def blsG2GenY0 : Nat :=
+  1985150602287291935568054521177171638300868978215655730859378665066344726373823718423869104263333984641494340347905
+def blsG2GenY1 : Nat :=
+  927553665492332455747201965776037880757740193453592970025027978793976877002675564980949289727957565575433344219582
+
+def blsG2Generator : BLSP2 :=
+  ⟨BLSF2.mk blsG2GenX0 blsG2GenX1, BLSF2.mk blsG2GenY0 blsG2GenY1⟩
+
+#guard blsG2Generator.isOnCurve
+#guard (B8L.toExStrBLSP2 (BLSP2.toB8L blsG2Generator)).toOption = some blsG2Generator
+#guard BLSP2.toB8L (⟨0, 0⟩ : BLSP2) = List.replicate 256 (0 : B8)
