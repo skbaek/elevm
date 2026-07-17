@@ -2644,7 +2644,7 @@ PASS	InvalidBlocks/bc4895-withdrawals/twoIdenticalIndex.json
 PASS	InvalidBlocks/bc4895-withdrawals/twoIdenticalIndexDifferentValidator.json
 PASS	InvalidBlocks/bc4895-withdrawals/warmup.json
 PASS	InvalidBlocks/bc4895-withdrawals/withdrawalsAddressBounds.json
-FAIL	InvalidBlocks/bc4895-withdrawals/withdrawalsAmountBounds.json
+PASS	InvalidBlocks/bc4895-withdrawals/withdrawalsAmountBounds.json
 PASS	InvalidBlocks/bc4895-withdrawals/withdrawalsIndexBounds.json
 PASS	InvalidBlocks/bc4895-withdrawals/withdrawalsValidatorIndexBounds.json
 PASS	InvalidBlocks/bcBlockGasLimitTest/GasUsedHigherThanBlockGasLimitButNotWithRefundsSuicideFirst.json

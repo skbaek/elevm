@@ -339,7 +339,109 @@ def getFiles (path : System.FilePath) : IO (List System.FilePath) := do
   else
     return [path]
 
+def createMinimalEvm (adr : Adr) (input : B8L) (gasLimit : Nat) : Evm := {
+  pc := 0
+  sta := {
+    caller := default
+    target := none
+    currentTarget := adr
+    gas := gasLimit
+    value := default
+    data := input
+    codeAddress := none
+    code := .empty
+    depth := 1
+    shouldTransferValue := false
+    isStatic := false
+    disablePrecompiles := false
+    benvStat := default
+    tenvStat := default
+  }
+  dyna := {
+    mach := {
+      stack := []
+      memory := .empty
+      gasLeft := gasLimit
+    }
+    «meta» := {
+      logs := []
+      refundCounter := 0
+      output := []
+      accountsToDelete := .emptyWithCapacity
+      returnData := []
+      error := none
+      accessedAddresses := .emptyWithCapacity
+      accessedStorageKeys := .emptyWithCapacity
+      createdAccounts := .emptyWithCapacity
+    }
+    world := {
+      state := .empty
+      transientStorage := .empty
+    }
+  }
+}
+
+def processVector (adr : Adr) : (Nat × Lean.Json) → IO Bool
+  | ⟨idx, json⟩ => do
+    let name ← (json.find? "Name" >>= Lean.Json.toString?).toIO s!"missing Name at index {idx}"
+    let inputStr ← (json.find? "Input" >>= Lean.Json.toString?).toIO s!"missing Input for {name}"
+    let input ← (Hex.toB8L <| remove0x inputStr).toIO s!"invalid Input hex for {name}"
+    let isPositive := (json.find? "Expected").isSome
+    let expected? ← if isPositive then
+        let expStr ← (json.find? "Expected" >>= Lean.Json.toString?).toIO s!"missing Expected for {name}"
+        some <$> (Hex.toB8L <| remove0x expStr).toIO s!"invalid Expected hex for {name}"
+      else pure none
+    let gas ← if isPositive then
+        let g ← (json.find? "Gas").toIO s!"missing Gas for {name}"
+        let gs := toString g
+        (String.toNat? gs).toIO s!"invalid Gas for {name}"
+      else pure 0
+    let evm := createMinimalEvm adr input 0xffffffffffff
+    let res := precompileRun evm adr
+    match expected? with
+    | some expected =>
+      match res with
+      | .ok cost output =>
+        if cost == gas && output == expected then
+          .println s!"PASS\t{name}"
+          return true
+        else
+          .println s!"FAIL\t{name}\t(expected out={expected.toHex} gas={gas}, got out={output.toHex} gas={cost})"
+          return false
+      | .error err _ =>
+        .println s!"FAIL\t{name}\t(expected out={expected.toHex}, got error {err})"
+        return false
+    | none =>
+      match res with
+      | .error _ _ =>
+        .println s!"PASS\t{name}"
+        return true
+      | .ok _ output =>
+        .println s!"FAIL\t{name}\t(expected error, got ok out={output.toHex})"
+        return false
+
+def runVectorFile (addr : Adr) (path : String) : IO Bool := do
+  let rb ← readJsonFile path >>= Lean.Json.toIoList
+  let js := rb.putIndex
+  let results ← js.mapM (processVector addr)
+  let mut passes := 0
+  for pass in results do
+    if pass then passes := passes + 1
+  let total := results.length
+  if passes == total then
+    .println s!"OK — vectors: {passes}/{total} PASS"
+    return true
+  else
+    .println s!"RED — vectors: {passes}/{total} PASS, target not met"
+    return false
+
 def main : List String → IO Unit
+  | "--vectors" :: addrStr :: pathStr :: [] => do
+    let addrStr2 := remove0x addrStr
+    let paddedAddrStr := String.mk (List.replicate (40 - addrStr2.length) '0') ++ addrStr2
+    let addr ← (Hex.toAdr? paddedAddrStr).toIO "invalid address"
+    if !(← runVectorFile addr pathStr) then
+      IO.Process.exit 1
   | path :: opts => do
     verbosityRef.set (List.contains opts "--verbose")
     let testIdx : Option Nat := getTestIndex opts
