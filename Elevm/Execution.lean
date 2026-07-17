@@ -1,5 +1,6 @@
 import Elevm.Types
 import Elevm.EC
+import Elevm.BLS
 import Elevm.Hash
 
 /-
@@ -3125,6 +3126,7 @@ def executePointEval (evm : Evm) : PrecompResult :=
   if data.length ≠ 192 then .error "KZGProofError" 0
   else .error "UNIMP : executePointEval" 0
 
+def gasBlsG1Add : Nat := 375
 def gasBlsG1Mul : Nat := 12000
 def gasBlsG1Map : Nat := 5500
 def gasBlsG2Add : Nat := 600
@@ -3135,7 +3137,11 @@ def gasBlsG2Map : Nat := 23800
 def executeBls12G1Add (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   if data.length ≠ 256 then .error "InvalidParameter" 0
-  else .error "BLS12 G1 Add not implemented yet" 0
+  else
+    PrecompResult.chargeGas gasBlsG1Add evm fun () =>
+      match B8L.toExStrBLSP (data.take 128), B8L.toExStrBLSP (data.drop 128) with
+      | .ok p1, .ok p2 => .ok gasBlsG1Add (BLSP.toB8L (p1 + p2))
+      | _, _ => .error "OutOfGasError" gasBlsG1Add
 
 -- bls12_g1_msm
 def executeBls12G1Msm (evm : Evm) : PrecompResult :=
