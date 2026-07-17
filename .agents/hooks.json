@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/bsk/elevm/.agents/antigravity_permit.py"
+            "command": "/Users/bsk/elevm/.agents/antigravity_permit.py"
           }
         ]
       }
