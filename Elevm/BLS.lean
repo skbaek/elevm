@@ -31,17 +31,41 @@ def B8L.toExStrBLSF (data : B8L) : Except String BLSF := do
   pure (FinField.ofNat x)
 
 -- def bytes_to_g1(data : Bytes) -> Point3D[FQ]:
-def B8L.toExStrBLSP (data : B8L) : Except String BLSP := do
+def B8L.toExStrBLSP (data : B8L) (subgroupCheck : Bool := false) : Except String BLSP := do
   if data.length ≠ 128 then
     .error "InvalidParameter : input should be 128 bytes long"
   let x ← B8L.toExStrBLSF (data.take 64)
   let y ← B8L.toExStrBLSF (data.drop 64)
-  (EllipticCurve.mk? x y).toExcept
+  let p ← (EllipticCurve.mk? x y).toExcept
     "InvalidParameter : point is not on curve"
+  if subgroupCheck then
+    if (p.mulBy blsCurveOrder) ≠ ⟨0, 0⟩ then
+      .error "InvalidParameter : subgroup check failed"
+  pure p
 
 -- def g1_to_bytes(g1_point : Point3D[FQ]) -> Bytes:
 def BLSP.toB8L (p : BLSP) : B8L :=
   p.x.val.toB8L.pack 64 ++ p.y.val.toB8L.pack 64
+
+def decodeG1MsmPairs (data : B8L) : Except String (List (BLSP × Nat)) :=
+  let rec aux (fuel : Nat) (acc : List (BLSP × Nat)) (bs : B8L) : Except String (List (BLSP × Nat)) :=
+    match fuel with
+    | 0 => .ok acc.reverse
+    | fuel' + 1 =>
+      if bs.isEmpty then .ok acc.reverse
+      else if bs.length < 160 then
+        .error "InvalidParameter : remaining bytes less than 160"
+      else do
+        let p ← B8L.toExStrBLSP (bs.take 128) true
+        let s := B8L.toNat ((bs.drop 128).take 32)
+        aux fuel' ((p, s) :: acc) (bs.drop 160)
+  aux data.length [] data
+
+def g1MsmSum (pairs : List (BLSP × Nat)) : BLSP :=
+  let rec aux (acc : BLSP) : List (BLSP × Nat) → BLSP
+    | [] => acc
+    | (p, s) :: ps => aux (acc + p.mulBy s) ps
+  aux ⟨0, 0⟩ pairs
 
 -- py_ecc.bls12_381.bls12_381_curve.G1
 def blsG1GenX : Nat :=
@@ -68,3 +92,4 @@ def blsG1GenDouble : BLSP := ⟨FinField.ofNat blsG1GenDoubleX, FinField.ofNat b
 #guard
   (B8L.toExStrBLSP (List.replicate 128 (0 : B8))).toOption = some (⟨0, 0⟩ : BLSP)
 #guard BLSP.toB8L (⟨0, 0⟩ : BLSP) = List.replicate 128 (0 : B8)
+#guard (blsG1Generator.mulBy blsCurveOrder) = ⟨0, 0⟩
