@@ -5724,12 +5724,14 @@ def BLT.toExStrWithdrawal : BLT → Except String Withdrawal
     let globalIndex ← globalIndex.toRlpB64 "withdrawal globalIndex"
     let validatorIndex ← validatorIndex.toRlpB64 "withdrawal validatorIndex"
     let recipient ← recipient.toRlpAdr "withdrawal recipient"
-    let amount ← amount.toRlpB256 "withdrawal amount"
+    -- EIP-4895: `amount` is a 64-bit Gwei scalar on the wire, even though the
+    -- `Withdrawal` field stores it as 256 bits for balance arithmetic.
+    let amount ← amount.toRlpB64 "withdrawal amount"
     .ok {
       globalIndex := globalIndex,
       validatorIndex := validatorIndex,
       recipient := recipient,
-      amount := amount
+      amount := amount.toNat.toB256
     }
   | _ =>
     .error <| rlpStructureError "withdrawal"
@@ -5849,9 +5851,15 @@ private def testRecipient : B8L := List.replicate 20 0x11
 #guard hasTag rlpFixedWidthTag <|
   BLT.toExStrWithdrawal <|
     withdrawalDecoderVector [] [] (List.replicate 21 0x11) []
-#guard hasTag rlpFieldOverflow256Tag <|
+-- The amount is a 64-bit Gwei scalar (EIP-4895): the exact eight-byte maximum
+-- decodes, and nine bytes are rejected at the field boundary rather than
+-- surfacing later as a state-root mismatch.
+#guard (BLT.toExStrWithdrawal <|
+  withdrawalDecoderVector [] [] testRecipient (List.replicate 8 0xFF)
+  ).toOption.map (fun wd => wd.amount.toNat) = some (2 ^ 64 - 1)
+#guard hasTag rlpFieldOverflow64Tag <|
   BLT.toExStrWithdrawal <|
-    withdrawalDecoderVector [] [] testRecipient thirtyThreeByteScalar
+    withdrawalDecoderVector [] [] testRecipient nineByteScalar
 
 -- A canonical legacy transaction preserves its signing/re-encoding bytes.
 private def canonicalLegacyVector : BLT :=

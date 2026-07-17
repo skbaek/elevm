@@ -190,7 +190,11 @@ exactly, leave the snapshot store unchanged, and never stop later blocks. -/
 def processBlockJsons (store : ChainStore) :
   List (Nat × Lean.Json) → IO ChainStore
   | ⟨idx, blockJson⟩ :: rest => do
-    let chainname ← blockJson.find "chainname" >>= Lean.Json.toIoString
+    -- Hand-authored blockchain fixtures carry `chainname`; blockchain tests
+    -- generated from GeneralStateTests do not.  The label is diagnostic only:
+    -- ancestry is always selected from the decoded parent hash.
+    let chainname :=
+      (blockJson.find? "chainname" >>= Lean.Json.toString?).getD "default"
     .println s!"BLOCK INDEX : {idx}"
     .println s!"CHAIN NAME : {chainname}"
     let ⟨rawExpected?, blockRlp⟩ ← getTxExMap blockJson
