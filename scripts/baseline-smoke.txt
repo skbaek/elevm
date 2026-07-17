@@ -141,8 +141,8 @@ PASS	InvalidBlocks/bcEIP1559/gasLimit40m.json
 PASS	InvalidBlocks/bcEIP3675/timestampPerBlock.json
 PASS	InvalidBlocks/bcInvalidHeaderTest/GasLimitIsZero.json
 PASS	InvalidBlocks/bcInvalidHeaderTest/wrongGasUsed.json
-FAIL	InvalidBlocks/bcMultiChainTest/UncleFromSideChain.json
-PASS	InvalidBlocks/bcStateTests/EmptyTransaction.json
+PASS	InvalidBlocks/bcMultiChainTest/UncleFromSideChain.json
+FAIL	InvalidBlocks/bcStateTests/EmptyTransaction.json
 PASS	InvalidBlocks/bcStateTests/gasLimitTooHigh.json
 PASS	InvalidBlocks/bcUncleHeaderValidity/incorrectUncleTimestamp.json
 PASS	InvalidBlocks/bcUncleHeaderValidity/pastUncleTimestamp.json
