@@ -3182,17 +3182,6 @@ def executeBls12G2Msm (evm : Evm) : PrecompResult :=
       | .ok pairs => .ok gasCost (g2MsmSum pairs).toB8L
       | .error _ => .error "OutOfGasError" gasCost
 
--- def bls12_pairing(evm : Evm) -> None :
-def executeBls12Pairing (evm : Evm) : PrecompResult :=
-  let data := evm.sta.data
-  if data.length = 0 ∨ data.length % 384 ≠ 0 then
-    .error s!"InvalidParameter : {data.length} is not a valid input length" 0
-  else
-    let k := data.length / 384
-    let gasCost := (32600 * k + 37700)
-    PrecompResult.chargeGas gasCost evm fun () =>
-      .error "BLS12 pairing not implemented yet" gasCost
-
 -- def bls12_map_fp_to_g1(evm : Evm) -> None :
 def executeBls12MapFpToG1 (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
@@ -3253,6 +3242,37 @@ def executeBls12MapFp2ToG2 (evm : Evm) : PrecompResult :=
   else
     PrecompResult.chargeGas gasBlsG2Map evm fun () =>
       .error "main logic of BLS12 map FP2-to_G2 not implemented yet" gasBlsG2Map
+
+def executeBls12PairingInner (data : B8L) (cost : Nat) :
+    Except (String × Nat) (Nat × B8L) := do
+  let mut result : BLSF12 := 1
+  for i in List.range (data.length / 384) do
+    let p : BLSP ←
+      catchWithOOGPrecomp cost (hasErrorType · "InvalidParameter") <|
+        B8L.toExStrBLSP (data.slice! (i * 384) 128) true
+    let q : BLSP2 ←
+      catchWithOOGPrecomp cost (hasErrorType · "InvalidParameter") <|
+        B8L.toExStrBLSP2 (data.slice! (i * 384 + 128) 256) true
+    let pairResult ← match blsPairing q p with
+                     | some v => pure v
+                     | none => throw ⟨"ValueError", cost⟩
+    result := result * pairResult
+  let output : B8L :=
+    if result = 1 then (1 : Nat).toB256.toB8L else (0 : Nat).toB256.toB8L
+  pure (cost, output)
+
+-- def bls12_pairing(evm : Evm) -> None :
+def executeBls12Pairing (evm : Evm) : PrecompResult :=
+  let data := evm.sta.data
+  if data.length = 0 ∨ data.length % 384 ≠ 0 then
+    .error s!"InvalidParameter : {data.length} is not a valid input length" 0
+  else
+    let k := data.length / 384
+    let gasCost := (32600 * k + 37700)
+    PrecompResult.chargeGas gasCost evm fun () =>
+      match executeBls12PairingInner data gasCost with
+      | .ok ⟨cost, output⟩ => .ok cost output
+      | .error ⟨msg, cost⟩ => .error msg cost
 
 def executePairingCheckInner (data : B8L) (cost : Nat) :
     Except (String × Nat) (Nat × B8L) := do

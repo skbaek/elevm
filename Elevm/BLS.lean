@@ -174,3 +174,112 @@ def blsG2Generator : BLSP2 :=
 #guard (B8L.toExStrBLSP2 (BLSP2.toB8L blsG2Generator)).toOption = some blsG2Generator
 #guard BLSP2.toB8L (⟨0, 0⟩ : BLSP2) = List.replicate 256 (0 : B8)
 #guard (blsG2Generator.mulBy blsCurveOrder) = ⟨0, 0⟩
+
+-- Pairing machinery, ported from py_ecc's non-optimized
+-- `bls12_381_pairing` module.  The Fp12 tower type BLSF12 (modulus
+-- w^12 - 2*w^6 + 2, py_ecc FQ12_MODULUS_COEFFS = (2, 0, 0, 0, 0, 0,
+-- -2, 0, 0, 0, 0, 0)) and the curve BLSP12 over it already live in
+-- EC.lean next to their BN254 counterparts.
+
+-- py_ecc.bls12_381.bls12_381_pairing.ate_loop_count
+def blsAteLoopCount : Nat := 15132376222941642752
+
+-- py_ecc.bls12_381.bls12_381_pairing.log_ate_loop_count
+def blsLogAteLoopCount : Nat := 62
+
+-- def cast_point_to_fq12(pt: Point2D[FQ]) -> Point2D[FQ12]:
+def BLSP.toBLSP12 : BLSP → BLSP12
+  | ⟨x, y⟩ => ⟨⟨trimZero [x]⟩, ⟨trimZero [y]⟩⟩
+
+-- def twist(pt: Point2D[FQP]) -> Point2D[FQ12]:
+-- Unlike the BN254 twist in EC.lean (which multiplies by w^2 / w^3),
+-- py_ecc's BLS12-381 twist divides the coordinates by w^2 / w^3.
+def blsTwist (p : BLSP2) : BLSP12 :=
+  let xs := List.ekatD 2 p.x.val (0 : BLSF)
+  let ys := List.ekatD 2 p.y.val (0 : BLSF)
+  let x1 := xs[0]!
+  let x0 := xs[1]!
+  let y1 := ys[0]!
+  let y0 := ys[1]!
+  -- Field isomorphism from Z[p] / u^2 + 1 to Z[p] / u^2 - 2*u + 2:
+  -- xcoeffs = [_x.coeffs[0] - _x.coeffs[1], _x.coeffs[1]], embedded
+  -- into FQ12 at degrees 0 and 6 (w^6 = u).
+  let nx : BLSF12 := ⟨trimZero [x1, 0, 0, 0, 0, 0, x0 - x1]⟩
+  let ny : BLSF12 := ⟨trimZero [y1, 0, 0, 0, 0, 0, y0 - y1]⟩
+  let w : BLSF12 := ⟨[1, 0]⟩
+  ⟨nx / (w ^ 2), ny / (w ^ 3)⟩
+
+-- def linefunc(P1, P2, T) -> Field:
+-- Duplicated from EC.lean's BN254 `linefunc` (numerator/denominator
+-- form, avoiding per-line division) rather than generalizing it.
+def blsLinefunc : BLSP12 → BLSP12 → BLSP12 → BLSP12
+  | ⟨x1, y1⟩, ⟨x2, y2⟩, ⟨xt, yt⟩ =>
+    let mNumerator : BLSF12 := y2 - y1
+    let mDenominator : BLSF12 := x2 - x1
+    if mDenominator ≠ 0
+    then
+      ⟨
+        mNumerator * (xt - x1) - mDenominator * (yt - y1),
+        mDenominator
+      ⟩
+    else
+      if mNumerator = 0
+      then
+        let mNumerator := 3 * x1 * x1
+        let mDenominator := 2 * y1
+        ⟨
+          mNumerator * (xt - x1) - mDenominator * (yt - y1),
+          mDenominator
+        ⟩
+      else ⟨xt - x1, 1⟩
+
+-- def miller_loop(Q: Point2D[FQ12], P: Point2D[FQ12]) -> FQ12:
+-- Iterates the bits of ate_loop_count from bit log_ate_loop_count down
+-- to bit 0; unlike the BN254 loop there are no negative pseudo-binary
+-- digits and no Frobenius tail lines.
+def blsMillerLoop (q p : BLSP12) (finalExp : Bool := true) : Option BLSF12 := do
+  let mut r : BLSP12 := q
+  let mut fNum : BLSF12 := 1
+  let mut fDen : BLSF12 := 1
+  -- for i in range(log_ate_loop_count, -1, -1):
+  for i in (List.range (blsLogAteLoopCount + 1)).reverse do
+    let ⟨_n, _d⟩ := blsLinefunc r r p
+    fNum := fNum * fNum * _n
+    fDen := fDen * fDen * _d
+    r := r.double
+    -- if ate_loop_count & (2**i):
+    if blsAteLoopCount.testBit i then
+      let ⟨_n, _d⟩ := blsLinefunc r q p
+      fNum := fNum * _n
+      fDen := fDen * _d
+      r := r + q
+  let f := fNum / fDen
+  return (
+    if finalExp
+    then f ^ ((blsPrime ^ 12 - 1) / blsCurveOrder)
+    else f
+  )
+
+-- def pairing(Q: Point2D[FQ2], P: Point2D[FQ]) -> FQ12:
+def blsPairing (q : BLSP2) (p : BLSP) (finalExp : Bool := true) : Option BLSF12 := do
+  guard q.isOnCurve
+  guard p.isOnCurve
+  if p = ⟨0, 0⟩ ∨ q = ⟨0, 0⟩ then
+    return 1
+  blsMillerLoop (blsTwist q) (p.toBLSP12) finalExp
+
+-- py_ecc checks `is_on_curve(G12, b12)` for the twisted generator;
+-- b12 = b = 4, so the G1 embedding must land on the same curve.
+#guard (blsTwist blsG2Generator).isOnCurve
+#guard (BLSP.toBLSP12 blsG1Generator).isOnCurve
+
+-- Bilinearity sanity checks: e(2*G1gen, G2gen) = e(G1gen, 2*G2gen)
+-- = e(G1gen + G1gen, G2gen) = e(G1gen, G2gen)^2 ≠ 1.  Each pairing is
+-- bound once; the squared form and the final inequality also rule out
+-- a degenerate implementation mapping everything to 1.
+#guard
+  let eg := blsPairing blsG2Generator blsG1Generator
+  let e2g := blsPairing blsG2Generator (blsG1Generator.mulBy 2)
+  let eg2 := blsPairing (blsG2Generator.mulBy 2) blsG1Generator
+  let egg := blsPairing blsG2Generator (blsG1Generator + blsG1Generator)
+  e2g = eg2 ∧ e2g = egg ∧ e2g = eg.map (fun f => f * f) ∧ eg ≠ some 1
