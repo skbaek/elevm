@@ -618,12 +618,14 @@ def Hexit.toB4 : Char → Option B8
   | 'F' => some 0x0F
   |  _  => none
 
-def B4L.toB8L : B8L → Option B8L
-  | [] => some []
-  | [_] => none
-  | x :: y :: xs =>
-    let xy := (x <<< 4) ||| y
-    (xy :: ·) <$> B4L.toB8L xs
+-- Tail-recursive: inputs are whole transaction payloads, so the naive
+-- `(xy :: ·) <$> toB8L xs` shape overflows the stack past ~64 KB.
+def B4L.toB8L.go : B8L → B8L → Option B8L
+  | acc, [] => some acc.reverse
+  | _, [_] => none
+  | acc, x :: y :: xs => B4L.toB8L.go (((x <<< 4) ||| y) :: acc) xs
+
+def B4L.toB8L (xs : B8L) : Option B8L := B4L.toB8L.go [] xs
 
 def Hex.toB8L (s : String) : Option B8L :=
   s.data.mapM Hexit.toB4 >>= B4L.toB8L

@@ -1,0 +1,58 @@
+# Hand-authored target baseline for `scripts/check.sh --bls` (precomps.md
+# Step 9). Every file in scripts/bls-tests.txt is expected PASS under the
+# tier defaults: fixture root = the pinned EEST v5.4.0 snapshot at
+# ~/eest-fixtures/fixtures/blockchain_tests (provenance in
+# scripts/vectors/SOURCES.md), ELEVM_TIMEOUT = 1200.
+#
+# The 1200 s tier timeout is sized from wall times observed 2026-07-18
+# (Apple Silicon, 10 cores); the two slowest files PASS with >4x headroom:
+#   prague/.../test_valid.json            ~265-285 s (514 cases, 46 MB)
+#   cancun/.../test_external_vectors.json ~109 s (122 Prague KZG cases)
+# No TIMEOUT entry is sanctioned in this baseline.
+#
+# Documented exclusions — files present in the fixture directories but
+# deliberately absent from scripts/bls-tests.txt. elevm is a Prague-only
+# executable specification by design; fixtures whose cases demand non-Prague
+# execution are out of scope, and their failure under a forced run is
+# intended behavior, not a gap:
+#   prague/eip2537_bls_12_381_precompiles/test_precompile_before_fork.json
+#     all 7 cases network=CancunToPragueAtTime15k (fork-transition execution)
+#   cancun/eip4844_blobs/test_precompile_before_fork.json
+#     1 case network=ShanghaiToCancunAtTime15k (fork-transition execution)
+#   cancun/eip4844_blobs/test_precompile_during_fork.json
+#     1 case network=ShanghaiToCancunAtTime15k (fork-transition execution)
+# (The remaining cancun/eip4844_blobs files outside bls-tests.txt are blob-
+# transaction lifecycle tests unrelated to the precompiles; the six listed
+# point-evaluation files are the Step-8/9 scope.)
+# Unit-level coverage of the precompile semantics behind the exclusions is
+# green in the vector harness: scripts/check-vectors.sh runs every EIP-2537
+# vector file and all 122 consensus KZG vectors through `elevm --vectors`.
+PASS	cancun/eip4844_blobs/test_call_opcode_types.json
+PASS	cancun/eip4844_blobs/test_external_vectors.json
+PASS	cancun/eip4844_blobs/test_invalid_inputs.json
+PASS	cancun/eip4844_blobs/test_point_evaluation_precompile_gas_usage.json
+PASS	cancun/eip4844_blobs/test_tx_entry_point.json
+PASS	cancun/eip4844_blobs/test_valid_inputs.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_call_types.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_eip_2537.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_gas.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_gas_g1msm.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_gas_g2msm.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_gas_pairing.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_length_g1msm.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_length_g2msm.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_length_pairing.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_multi_inf.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_zero_gas_g1msm.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_zero_gas_g2msm.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_zero_gas_pairing.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_zero_length_g1msm.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_zero_length_g2msm.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_invalid_zero_length_pairing.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_isogeny_kernel_values.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_valid.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_valid_gas_g1msm.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_valid_gas_g2msm.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_valid_gas_pairing.json
+PASS	prague/eip2537_bls_12_381_precompiles/test_valid_multi_inf.json

@@ -1,4 +1,18 @@
-# Pinned sources for compact MSM vectors
+# Pinned sources for compact MSM vectors and EEST fixtures
+
+## EEST blockchain fixtures (Step 9, `--bls` tier)
+
+The `--bls` tier of `scripts/check.sh` runs EEST consensus fixtures that are
+too large to vendor. They come from one pinned execution-spec-tests fixture
+release, unpacked outside the repo at `~/eest-fixtures/fixtures/`:
+
+| Release tag | File | SHA-256 |
+| --- | --- | --- |
+| [`v5.4.0`](https://github.com/ethereum/execution-spec-tests/releases/tag/v5.4.0) | `fixtures_stable.tar.gz` | `92cf1b47ad12fb27163261fc3c1cea5df72439cab507983d06b56c94f8741909` |
+
+The tier reads `blockchain_tests/prague/eip2537_bls_12_381_precompiles/` and
+the point-evaluation files under `blockchain_tests/cancun/eip4844_blobs/`
+(their cases are regenerated per network; the tier selects the Prague ones).
 
 The four committed `*.head.json` files contain the first 32 entries of their
 full upstream vectors. Regenerate them with the committed `jq '.[0:32]'`

@@ -4886,8 +4886,11 @@ def checkTransaction (benv : Benv) (blockOut : BlockOutput) (tx : Tx) :
   ⟩
 
 def calculateIntrinsicCost (tx: Tx) : Nat × Nat :=
+  -- `foldl` (tail-recursive) rather than `(map …).sum`: the latter's
+  -- non-tail-recursive `List.map` overflows the stack on large calldata
+  -- (e.g. the 1.2 MB inputs in the EIP-2537 stress fixtures).
   let tokensInCalldata : Nat :=
-    (tx.data.map <| fun x => if x = 0 then 1 else 4).sum
+    tx.data.foldl (fun acc x => acc + (if x = 0 then 1 else 4)) 0
   let callDataFloorGasCost : Nat :=
     tokensInCalldata * floorCalldataCost + txBaseCost
   let dataCost : Nat :=

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fixture-test harness for elevm (REFACTOR.md Phase 0, step 0.1).
 #
-# Usage: scripts/check.sh (--depth | --smoke | --full | --patch | --rlp4 | --dir <path>) [--rebase] [--no-build]
+# Usage: scripts/check.sh (--depth | --smoke | --full | --patch | --rlp4 | --bls | --dir <path>) [--rebase] [--no-build]
 #
 #   --depth       run the fuel/call-depth stress set (scripts/depth-tests.txt)
 #   --smoke       run the smoke set (scripts/smoke-tests.txt)
@@ -10,6 +10,11 @@
 #                 ten historical FAIL files
 #   --rlp4        run the four invalid-RLP/header files (scripts/rlp4-tests.txt),
 #                 a subset of --patch
+#   --bls         run the EEST consensus set for the BLS12-381 and
+#                 point-evaluation precompiles (scripts/bls-tests.txt) against
+#                 the committed hand-authored target baseline
+#                 scripts/baseline-bls.txt (precomps.md Step 9); the fixture
+#                 root and per-file timeout defaults differ — see Environment
 #   --dir <path>  run every .json fixture under <path> (must be inside the
 #                 fixture root); ad hoc — if no baseline-dir.txt exists, the
 #                 gate passes iff every file PASSes
@@ -21,10 +26,20 @@
 # succeeds if and only if every listed file is PASS. They have no baseline and
 # never rebase. Their reports additionally record per-file elapsed wall time.
 #
+# --bls compares against a committed baseline like the ordinary tiers, but the
+# baseline is a hand-authored target (all PASS unless an entry carries a
+# written justification), so --rebase is rejected; edit baseline-bls.txt
+# directly instead. `#` comment lines in it document exclusions and
+# justifications. Like the target gates, its report records wall times.
+#
 # Environment:
 #   ELEVM_FIXTURES  fixture root (default:
-#                   ~/execution-specs/tests/fixtures/ethereum_tests/BlockchainTests)
-#   ELEVM_TIMEOUT   per-file timeout in seconds (default: 300)
+#                   ~/execution-specs/tests/fixtures/ethereum_tests/BlockchainTests;
+#                   for --bls: ~/eest-fixtures/fixtures/blockchain_tests, the
+#                   pinned EEST release snapshot — see scripts/vectors/SOURCES.md)
+#   ELEVM_TIMEOUT   per-file timeout in seconds (default: 100; for --bls: 1200,
+#                   sized for the EEST stress files — 46 MB test_valid.json and
+#                   the 122-case KZG external-vector file)
 #
 # A failing test makes elevm throw and abort the whole invocation, so each
 # fixture file runs in its own process, under a perl-alarm timeout (macOS has
@@ -42,12 +57,10 @@ set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
-FIXTURES="${ELEVM_FIXTURES:-$HOME/execution-specs/tests/fixtures/ethereum_tests/BlockchainTests}"
-TIMEOUT="${ELEVM_TIMEOUT:-100}"
 BIN="$ROOT/.lake/build/bin/elevm"
 
 usage() {
-  echo "usage: scripts/check.sh (--depth | --smoke | --full | --patch | --rlp4 | --dir <path>) [--rebase] [--no-build]" >&2
+  echo "usage: scripts/check.sh (--depth | --smoke | --full | --patch | --rlp4 | --bls | --dir <path>) [--rebase] [--no-build]" >&2
   exit 2
 }
 
@@ -57,7 +70,7 @@ REBASE=0
 BUILD=1
 while [ $# -gt 0 ]; do
   case "$1" in
-    --depth|--smoke|--full|--patch|--rlp4) TIER="${1#--}" ;;
+    --depth|--smoke|--full|--patch|--rlp4|--bls) TIER="${1#--}" ;;
     --dir)
       TIER="dir"
       shift
@@ -72,6 +85,18 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$TIER" ] || usage
 
+# Tier-dependent defaults: the bls tier runs the pinned EEST release snapshot,
+# which lives outside the default fixture root, and its stress files (46 MB
+# test_valid.json at ~265-285 s, the 122-case KZG external-vector file at
+# ~109 s) need a larger per-file timeout than the legacy tiers' 100 s.
+if [ "$TIER" = "bls" ]; then
+  FIXTURES="${ELEVM_FIXTURES:-$HOME/eest-fixtures/fixtures/blockchain_tests}"
+  TIMEOUT="${ELEVM_TIMEOUT:-1200}"
+else
+  FIXTURES="${ELEVM_FIXTURES:-$HOME/execution-specs/tests/fixtures/ethereum_tests/BlockchainTests}"
+  TIMEOUT="${ELEVM_TIMEOUT:-100}"
+fi
+
 # Target-gate tiers succeed iff every listed file is PASS; they have no
 # baseline and never rebase.
 case "$TIER" in
@@ -83,6 +108,13 @@ if [ "$IS_TARGET" -eq 1 ] && [ "$REBASE" -eq 1 ]; then
   exit 2
 fi
 
+# The bls tier compares against a committed hand-authored target baseline;
+# accepting observed results wholesale would defeat it.
+if [ "$TIER" = "bls" ] && [ "$REBASE" -eq 1 ]; then
+  echo "usage error: --rebase is not supported for the bls tier; its baseline is a hand-maintained target — edit scripts/baseline-bls.txt directly" >&2
+  exit 2
+fi
+
 if [ ! -d "$FIXTURES" ]; then
   echo "REGRESSION — $TIER: fixture root not found: $FIXTURES"
   exit 1
@@ -90,7 +122,7 @@ fi
 
 # Assemble the file list (paths relative to the fixture root, sorted).
 case "$TIER" in
-  depth|smoke|patch|rlp4)
+  depth|smoke|patch|rlp4|bls)
     LIST_FILE="$SCRIPT_DIR/$TIER-tests.txt"
     if [ ! -f "$LIST_FILE" ]; then
       echo "REGRESSION — $TIER: file list not found: $LIST_FILE"
@@ -164,7 +196,7 @@ while IFS= read -r REL; do
   else
     CLS=FAIL; NFAIL=$((NFAIL + 1))
   fi
-  if [ "$IS_TARGET" -eq 1 ]; then
+  if [ "$IS_TARGET" -eq 1 ] || [ "$TIER" = "bls" ]; then
     printf '%s\t%ss\t%s\n' "$CLS" "$ELAPSED" "$REL" >> "$REPORT"
     printf '[%d/%d] %s %ss %s\n' "$I" "$TOTAL" "$CLS" "$ELAPSED" "$REL" >&2
   else
@@ -191,6 +223,23 @@ if [ "$REBASE" -eq 1 ]; then
   cp "$REPORT" "$BASELINE"
   echo "OK — $TIER: baseline rebased with $TOTAL files ($SUMMARY)"
   exit 0
+fi
+
+# The bls baseline is hand-authored (`#` comments carry exclusions and
+# justifications) and the bls report carries an elapsed column; normalize
+# both into the plain CLS<TAB>REL shape for the generic comparison below.
+CMP_BASELINE="$BASELINE"
+CMP_REPORT="$REPORT"
+if [ "$TIER" = "bls" ]; then
+  if [ ! -f "$BASELINE" ]; then
+    echo "REGRESSION — bls: no target baseline at $BASELINE (it is committed and hand-maintained, never rebased)"
+    exit 1
+  fi
+  CMP_DIR="$(mktemp -d)"
+  grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$BASELINE" > "$CMP_DIR/baseline"
+  cut -f1,3 "$REPORT" > "$CMP_DIR/report"
+  CMP_BASELINE="$CMP_DIR/baseline"
+  CMP_REPORT="$CMP_DIR/report"
 fi
 
 if [ ! -f "$BASELINE" ]; then
@@ -222,7 +271,7 @@ CHANGES="$(awk -F'\t' '
       print kind "\t" base[file] "\tMISSING\t" file
     }
   }
-' "$BASELINE" "$REPORT")"
+' "$CMP_BASELINE" "$CMP_REPORT")"
 
 if [ -z "$CHANGES" ]; then
   NCHANGED=0
