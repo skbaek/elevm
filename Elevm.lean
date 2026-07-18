@@ -4,5 +4,6 @@ import Elevm.Basic
 import Elevm.Types
 import Elevm.Hash
 import Elevm.EC
+import Elevm.BLSConst
 import Elevm.BLS
 import Elevm.Execution

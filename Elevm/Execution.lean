@@ -3188,7 +3188,9 @@ def executeBls12MapFpToG1 (evm : Evm) : PrecompResult :=
   if data.length ≠ 64 then .error "InvalidParameter" 0
   else
     PrecompResult.chargeGas gasBlsG1Map evm fun () =>
-      .error "BLS12 map FP-to-G1 Msm not implemented yet" gasBlsG1Map
+      match B8L.toExStrBLSF data with
+      | .ok fp => .ok gasBlsG1Map (BLSP.toB8L (blsMapFpToG1 fp))
+      | .error _ => .error "OutOfGasError" gasBlsG1Map
 
 def catchWithOOG {ξ : Type U} (devm : Devm) (cond : String → Bool) :
   Except String ξ → Except (String × Devm) ξ
@@ -3241,7 +3243,9 @@ def executeBls12MapFp2ToG2 (evm : Evm) : PrecompResult :=
   if data.length ≠ 128 then .error "InvalidParameter" 0
   else
     PrecompResult.chargeGas gasBlsG2Map evm fun () =>
-      .error "main logic of BLS12 map FP2-to_G2 not implemented yet" gasBlsG2Map
+      match B8L.toExStrBLSF2 data with
+      | .ok fp2 => .ok gasBlsG2Map (BLSP2.toB8L (blsMapFp2ToG2 fp2))
+      | .error _ => .error "OutOfGasError" gasBlsG2Map
 
 def executeBls12PairingInner (data : B8L) (cost : Nat) :
     Except (String × Nat) (Nat × B8L) := do

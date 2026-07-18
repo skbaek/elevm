@@ -7,6 +7,7 @@
 -- Execution.lean (BNF/BNP/B8L.toExStrBNP) rather than generalizing them.
 
 import Elevm.EC
+import Elevm.BLSConst
 
 -- py_ecc.fields.field_properties.field_properties["bls12_381"]["field_modulus"];
 -- equal to the pre-existing (unused) `bls12Prime` constant in EC.lean.
@@ -283,3 +284,173 @@ def blsPairing (q : BLSP2) (p : BLSP) (finalExp : Bool := true) : Option BLSF12 
   let eg2 := blsPairing (blsG2Generator.mulBy 2) blsG1Generator
   let egg := blsPairing blsG2Generator (blsG1Generator + blsG1Generator)
   e2g = eg2 ∧ e2g = egg ∧ e2g = eg.map (fun f => f * f) ∧ eg ≠ some 1
+
+-- ---------------------------------------------------------------------------
+-- EIP-2537 map-to-curve precompiles (0x10 map_fp_to_G1, 0x11 map_fp2_to_G2).
+--
+-- Ported from py_ecc.bls.hash_to_curve.map_to_curve_G1/G2 and
+-- clear_cofactor_G1/G2, down through optimized_swu.py.  py_ecc works in
+-- homogeneous projective coordinates; because SSWU + the isogeny map are
+-- rational (projectively homogeneous) maps, evaluating them at the affine
+-- representative (z = 1) yields the same projective point, so this port is
+-- purely affine.  Bulk constants come from the generated BLSConst.
+-- ---------------------------------------------------------------------------
+
+-- Fp/Fp2 conversions from the generated Nat / (c0, c1) constants.
+def blsToF (n : Nat) : BLSF := FinField.ofNat n
+def blsToF2 : Nat × Nat → BLSF2 := fun (c0, c1) => BLSF2.mk c0 c1
+
+-- RFC 9380 sgn0 (py_ecc convention).  Fp: parity of the value.
+def blsSgn0F (x : BLSF) : Nat := x.val % 2
+
+-- Fp2: sign_0 or (zero_0 and sign_1), coeffs in (c0, c1) order.
+def blsSgn0F2 (x : BLSF2) : Nat :=
+  let cs := List.ekatD 2 x.val (0 : BLSF)
+  let c1 := cs[0]!
+  let c0 := cs[1]!
+  if c0.val % 2 = 1 then 1
+  else if c0.val = 0 then c1.val % 2 else 0
+
+-- Horner evaluation of a polynomial given its coefficients low degree first.
+def blsHornerF (coeffs : List BLSF) (x : BLSF) : BLSF :=
+  coeffs.foldr (fun c acc => acc * x + c) 0
+def blsHornerF2 (coeffs : List BLSF2) (x : BLSF2) : BLSF2 :=
+  coeffs.foldr (fun c acc => acc * x + c) 0
+
+-- Isogeny-map coefficient tables, converted once from BLSConst.
+def iso11XNumF : List BLSF := BLSConst.iso11XNum.map blsToF
+def iso11XDenF : List BLSF := BLSConst.iso11XDen.map blsToF
+def iso11YNumF : List BLSF := BLSConst.iso11YNum.map blsToF
+def iso11YDenF : List BLSF := BLSConst.iso11YDen.map blsToF
+def iso3XNumF2 : List BLSF2 := BLSConst.iso3XNum.map blsToF2
+def iso3XDenF2 : List BLSF2 := BLSConst.iso3XDen.map blsToF2
+def iso3YNumF2 : List BLSF2 := BLSConst.iso3YNum.map blsToF2
+def iso3YDenF2 : List BLSF2 := BLSConst.iso3YDen.map blsToF2
+
+-- def optimized_swu_G1(t: FQ) -> (numerator, y, denominator)
+-- Returned here as the affine point (x = numerator / denominator, y) on the
+-- 11-isogenous curve.
+def optimizedSwuG1 (t : BLSF) : BLSF × BLSF :=
+  let a := blsToF BLSConst.iso11A
+  let b := blsToF BLSConst.iso11B
+  let z := blsToF BLSConst.iso11Z
+  let t2 := t ^ 2
+  let zt2 := z * t2
+  let temp := zt2 + zt2 ^ 2
+  let denominator0 := -(a * temp)
+  let numerator0 := b * (temp + 1)
+  let denominator := if denominator0 = 0 then z * a else denominator0
+  let v := denominator ^ 3
+  let u := numerator0 ^ 3 + a * numerator0 * denominator ^ 2 + b * v
+  -- sqrt_division_FQ(u, v)
+  let tmp := u * v
+  let y0 := tmp * ((tmp * v ^ 2) ^ BLSConst.pMinus3Div4)
+  let isRoot := (y0 ^ 2 * v - u) = 0
+  let numerator := if isRoot then numerator0 else numerator0 * zt2
+  let y1 := if isRoot then y0
+            else y0 * t ^ 3 * blsToF BLSConst.sqrtMinus11Cubed
+  let y2 := if blsSgn0F t ≠ blsSgn0F y1 then -y1 else y1
+  (numerator / denominator, y2)
+
+-- def iso_map_G1(x, y, z) evaluated affinely (z = 1).
+def isoMapG1 : BLSF × BLSF → BLSP
+  | (x, y) =>
+    let xNum := blsHornerF iso11XNumF x
+    let xDen := blsHornerF iso11XDenF x
+    let yNum := blsHornerF iso11YNumF x
+    let yDen := blsHornerF iso11YDenF x
+    ⟨xNum / xDen, y * yNum / yDen⟩
+
+-- def map_to_curve_G1(u); then clear_cofactor_G1 (multiply by H_EFF_G1).
+def blsMapFpToG1 (fp : BLSF) : BLSP :=
+  (isoMapG1 (optimizedSwuG1 fp)).mulBy BLSConst.hEffG1
+
+-- def sqrt_division_FQ2(u, v) -> (is_valid_root, result)
+def sqrtDivisionFQ2 (u v : BLSF2) : Bool × BLSF2 :=
+  let temp1 := u * v ^ 7
+  let temp2 := temp1 * v ^ 8
+  let gamma := temp2 ^ BLSConst.pMinus9Div16 * temp1
+  let rec go : List BLSF2 → Bool × BLSF2
+    | [] => (false, gamma)
+    | root :: rest =>
+      let cand := root * gamma
+      if cand ^ 2 * v - u = 0 then (true, cand) else go rest
+  go (BLSConst.eighthRoots.map blsToF2)
+
+-- def optimized_swu_G2(t: FQ2) -> (numerator, y, denominator)
+-- Returned as the affine point (numerator / denominator, y) on the
+-- 3-isogenous curve.
+def optimizedSwuG2 (t : BLSF2) : BLSF2 × BLSF2 :=
+  let a := blsToF2 BLSConst.iso3A
+  let b := blsToF2 BLSConst.iso3B
+  let z := blsToF2 BLSConst.iso3Z
+  let t2 := t ^ 2
+  let zt2 := z * t2
+  let temp := zt2 + zt2 ^ 2
+  let denominator0 := -(a * temp)
+  let numerator0 := b * (temp + 1)
+  let denominator := if denominator0 = 0 then z * a else denominator0
+  let v := denominator ^ 3
+  let u0 := numerator0 ^ 3 + a * numerator0 * denominator ^ 2 + b * v
+  let (success, sqrtCand0) := sqrtDivisionFQ2 u0 v
+  let sqrtCand := sqrtCand0 * t ^ 3
+  let u := zt2 ^ 3 * u0
+  -- First eta making (eta * sqrtCand)^2 * v - u = 0.
+  let etaMatch : Option BLSF2 :=
+    (BLSConst.etas.map blsToF2).foldl
+      (fun acc eta =>
+        match acc with
+        | some _ => acc
+        | none =>
+          let esc := eta * sqrtCand
+          if esc ^ 2 * v - u = 0 then some esc else none)
+      none
+  let numerator := if success then numerator0 else numerator0 * zt2
+  let y1 : BLSF2 :=
+    if success then sqrtCand0
+    else match etaMatch with
+         | some esc => esc
+         | none => sqrtCand0  -- unreachable per py_ecc
+  let y2 := if blsSgn0F2 t ≠ blsSgn0F2 y1 then -y1 else y1
+  (numerator / denominator, y2)
+
+-- def iso_map_G2(x, y, z) evaluated affinely (z = 1).
+def isoMapG2 : BLSF2 × BLSF2 → BLSP2
+  | (x, y) =>
+    let xNum := blsHornerF2 iso3XNumF2 x
+    let xDen := blsHornerF2 iso3XDenF2 x
+    let yNum := blsHornerF2 iso3YNumF2 x
+    let yDen := blsHornerF2 iso3YDenF2 x
+    ⟨xNum / xDen, y * yNum / yDen⟩
+
+-- def map_to_curve_G2(u); then clear_cofactor_G2 (multiply by H_EFF_G2).
+def blsMapFp2ToG2 (fp2 : BLSF2) : BLSP2 :=
+  (isoMapG2 (optimizedSwuG2 fp2)).mulBy BLSConst.hEffG2
+
+-- Correctness #guards: the first positive vector of each official EIP-2537
+-- map file (bls_g1map_ / bls_g2map_).  Input field element maps to exactly
+-- the expected output point, which is on curve and in the correct subgroup.
+-- map_fp_to_G1_bls.json[0]:
+#guard
+  blsMapFpToG1 (blsToF 0x156c8a6a2c184569d69a76be144b5cdc5141d2d2ca4fe341f011e25e3969c55ad9e9b9ce2eb833c81a908e5fa4ac5f03)
+    = (⟨FinField.ofNat 0x184bb665c37ff561a89ec2122dd343f20e0f4cbcaec84e3c3052ea81d1834e192c426074b02ed3dca4e7676ce4ce48ba,
+        FinField.ofNat 0x04407b8d35af4dacc809927071fc0405218f1401a6d15af775810e4e460064bcc9468beeba82fdc751be70476c888bf3⟩ : BLSP)
+#guard
+  let g1 := blsMapFpToG1 (blsToF 0x156c8a6a2c184569d69a76be144b5cdc5141d2d2ca4fe341f011e25e3969c55ad9e9b9ce2eb833c81a908e5fa4ac5f03)
+  g1.isOnCurve ∧ g1.mulBy blsCurveOrder = ⟨0, 0⟩
+-- map_fp2_to_G2_bls.json[0]:
+#guard
+  blsMapFp2ToG2 (BLSF2.mk
+      0x07355d25caf6e7f2f0cb2812ca0e513bd026ed09dda65b177500fa31714e09ea0ded3a078b526bed3307f804d4b93b04
+      0x02829ce3c021339ccb5caf3e187f6370e1e2a311dec9b75363117063ab2015603ff52c3d3b98f19c2f65575e99e8b78c)
+    = (⟨BLSF2.mk
+        0x00e7f4568a82b4b7dc1f14c6aaa055edf51502319c723c4dc2688c7fe5944c213f510328082396515734b6612c4e7bb7
+        0x126b855e9e69b1f691f816e48ac6977664d24d99f8724868a184186469ddfd4617367e94527d4b74fc86413483afb35b,
+        BLSF2.mk
+        0x0caead0fd7b6176c01436833c79d305c78be307da5f6af6c133c47311def6ff1e0babf57a0fb5539fce7ee12407b0a42
+        0x1498aadcf7ae2b345243e281ae076df6de84455d766ab6fcdaad71fab60abb2e8b980a440043cd305db09d283c895e3d⟩ : BLSP2)
+#guard
+  let g2 := blsMapFp2ToG2 (BLSF2.mk
+      0x07355d25caf6e7f2f0cb2812ca0e513bd026ed09dda65b177500fa31714e09ea0ded3a078b526bed3307f804d4b93b04
+      0x02829ce3c021339ccb5caf3e187f6370e1e2a311dec9b75363117063ab2015603ff52c3d3b98f19c2f65575e99e8b78c)
+  g2.isOnCurve ∧ g2.mulBy blsCurveOrder = ⟨0, 0⟩
