@@ -3122,10 +3122,26 @@ def executeBlake2F (evm : Evm) : PrecompResult :=
         | none => .error "bCompress failed" cost
       | _ => .error "InvalidParameter" cost
 
+def gasPointEval : Nat := 50000
+
+-- def point_evaluation(evm : Evm) -> None:
 def executePointEval (evm : Evm) : PrecompResult :=
   let data := evm.sta.data
   if data.length ≠ 192 then .error "KZGProofError" 0
-  else .error "UNIMP : executePointEval" 0
+  else
+    PrecompResult.chargeGas gasPointEval evm fun () =>
+      let versionedHash := data.take 32
+      let z := (data.drop 32).take 32
+      let y := (data.drop 64).take 32
+      let commitment := (data.drop 96).take 48
+      let proof := (data.drop 144).take 48
+      if kzgCommitmentToVersionedHash commitment ≠ versionedHash then
+        .error "KZGProofError" gasPointEval
+      else
+        match verifyKzgProof commitment z y proof with
+        | .ok true =>
+          .ok gasPointEval ((4096 : Nat).toB256.toB8L ++ blsModulus.toB256.toB8L)
+        | _ => .error "KZGProofError" gasPointEval
 
 def gasBlsG1Add : Nat := 375
 def gasBlsG1Mul : Nat := 12000

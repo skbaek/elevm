@@ -17,7 +17,11 @@ import sys
 
 sys.path.insert(0, "/Users/bsk/execution-specs")
 
+from ethereum.crypto.kzg import KZG_SETUP_G2_MONOMIAL_1  # noqa: E402
+from ethereum.utils.hexadecimal import hex_to_bytes  # noqa: E402
+from py_ecc.bls.g2_primitives import signature_to_G2  # noqa: E402
 from py_ecc.optimized_bls12_381 import constants as C  # noqa: E402
+from py_ecc.optimized_bls12_381 import normalize  # noqa: E402
 
 
 def fq(x):
@@ -107,6 +111,20 @@ w(pair_list("iso3YDen", [fq2(k) for k in C.ISO_3_Y_DENOMINATOR]))
 w("")
 w("-- G2 effective cofactor (H_EFF_G2).")
 w(nat_def("hEffG2", C.H_EFF_G2))
+w("")
+
+# --- EIP-4844 point-evaluation trusted-setup G2 point. ---
+# The single G2 monomial (KZG_SETUP_G2_MONOMIAL_1, kzg.py:71) that
+# verify_kzg_proof_impl needs; decompressed here via py_ecc into an affine
+# ((x.c0, x.c1), (y.c0, y.c1)) pair in the (c0, c1) coeffs order.
+setup_x, setup_y = normalize(
+    signature_to_G2(hex_to_bytes(KZG_SETUP_G2_MONOMIAL_1))
+)
+w("-- Decompressed KZG_SETUP_G2_MONOMIAL_1 as ((x.c0, x.c1), (y.c0, y.c1)).")
+w(
+    "def kzgSetupG2Monomial1 : (Nat × Nat) × (Nat × Nat) := "
+    f"({pair(fq2(setup_x))}, {pair(fq2(setup_y))})"
+)
 w("")
 w("end BLSConst")
 

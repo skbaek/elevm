@@ -454,3 +454,115 @@ def blsMapFp2ToG2 (fp2 : BLSF2) : BLSP2 :=
       0x07355d25caf6e7f2f0cb2812ca0e513bd026ed09dda65b177500fa31714e09ea0ded3a078b526bed3307f804d4b93b04
       0x02829ce3c021339ccb5caf3e187f6370e1e2a311dec9b75363117063ab2015603ff52c3d3b98f19c2f65575e99e8b78c)
   g2.isOnCurve ∧ g2.mulBy blsCurveOrder = ⟨0, 0⟩
+
+-- ---------------------------------------------------------------------------
+-- EIP-4844 point evaluation (0x0a): compressed-G1 codec and KZG verification.
+--
+-- Ported from py_ecc.bls.point_compression.decompress_G1 (ZCash flag bits),
+-- py_ecc.bls.ciphersuites KeyValidate / g2_primitives.subgroup_check, and
+-- EELS ethereum.crypto.kzg (bytes_to_bls_field, verify_kzg_proof_impl,
+-- pairing_check).  The scalar-field modulus BLS_MODULUS equals blsCurveOrder.
+-- ---------------------------------------------------------------------------
+
+-- EIP-4844 BLS_MODULUS (kzg.py); equal to the curve order r.
+abbrev blsModulus : Nat := blsCurveOrder
+
+-- Fp square-root exponent (p ≡ 3 mod 4, so (p+1)/4 is an integer).
+def blsPPlus1Div4 : Nat := (blsPrime + 1) / 4
+
+-- kzg.py G1_POINT_AT_INFINITY = b"\xc0" + b"\x00" * 47.
+def blsG1PointAtInfinity : B8L := (0xc0 : B8) :: List.replicate 47 (0 : B8)
+
+-- point_compression.POW_2_381; the top three ZCash flag bits sit above it.
+def blsPow2_381 : Nat := 2 ^ 381
+
+-- def decompress_G1(z: G1Compressed) -> G1Uncompressed:
+-- 48-byte compressed G1 point with the (c_flag, b_flag, a_flag, x) bit layout.
+def decompressG1 (data : B8L) : Except String BLSP := do
+  if data.length ≠ 48 then
+    .error "InvalidParameter : compressed G1 should be 48 bytes"
+  let z := B8L.toNat data
+  let cFlag := z.testBit 383  -- most significant bit
+  let bFlag := z.testBit 382
+  let aFlag := z.testBit 381
+  -- c_flag == 1 indicates the compressed form.
+  if !cFlag then .error "InvalidParameter : c_flag should be 1"
+  -- is_point_at_infinity(z): z % 2^381 == 0.
+  let isInf := z % blsPow2_381 = 0
+  if bFlag ≠ isInf then .error "InvalidParameter : b_flag mismatch"
+  if isInf then
+    if aFlag then .error "InvalidParameter : infinity a_flag should be 0"
+    pure ⟨0, 0⟩
+  else
+    let x := z % blsPow2_381
+    if x ≥ blsPrime then
+      .error "InvalidParameter : x should be less than field modulus"
+    let xf : BLSF := FinField.ofNat x
+    -- Y^2 = X^3 + b, b = 4; y = (x^3 + b)^((p+1)/4).
+    let rhs := xf ^ 3 + 4
+    let y := rhs ^ blsPPlus1Div4
+    if y ^ 2 ≠ rhs then
+      .error "InvalidParameter : the given point is not on G1"
+    -- Choose the y whose leftmost bit equals a_flag: (y * 2) // p.
+    let yLead := (y.val * 2) / blsPrime
+    let aBit := if aFlag then 1 else 0
+    pure ⟨xf, if yLead ≠ aBit then -y else y⟩
+
+-- def validate_kzg_g1(b) followed by pubkey_to_G1: decode + KeyValidate
+-- (non-infinity, subgroup check), returning the decompressed point.
+def decodeKzgG1 (data : B8L) : Except String BLSP :=
+  if data = blsG1PointAtInfinity then
+    pure ⟨0, 0⟩
+  else do
+    let p ← decompressG1 data
+    if p = ⟨0, 0⟩ then
+      .error "InvalidParameter : point is at infinity"
+    if p.mulBy blsCurveOrder ≠ ⟨0, 0⟩ then
+      .error "InvalidParameter : subgroup check failed"
+    pure p
+
+-- def bytes_to_bls_field(b): 32-byte big-endian scalar, must be < BLS_MODULUS.
+def bytesToBlsField (data : B8L) : Except String Nat := do
+  if data.length ≠ 32 then
+    .error "InvalidParameter : field element should be 32 bytes"
+  let v := B8L.toNat data
+  if v ≥ blsModulus then
+    .error "InvalidParameter : field element >= BLS modulus"
+  pure v
+
+-- Decompressed KZG_SETUP_G2_MONOMIAL_1 (kzg.py:71) as an affine G2 point.
+def kzgSetupG2Monomial1P : BLSP2 :=
+  let ((x0, x1), (y0, y1)) := BLSConst.kzgSetupG2Monomial1
+  ⟨BLSF2.mk x0 x1, BLSF2.mk y0 y1⟩
+
+#guard kzgSetupG2Monomial1P.isOnCurve
+#guard kzgSetupG2Monomial1P.mulBy blsCurveOrder = ⟨0, 0⟩
+
+-- def verify_kzg_proof_impl(commitment, z, y, proof) -> bool.
+-- Verify P - y = Q * (X - z) via a two-pairing pairing_check.
+def verifyKzgProofImpl (commitment : BLSP) (z y : Nat) (proof : BLSP) : Bool :=
+  -- X_minus_z = KZG_SETUP_G2_MONOMIAL_1 + G2 * ((BLS_MODULUS - z) % BLS_MODULUS)
+  let xMinusZ : BLSP2 :=
+    kzgSetupG2Monomial1P + blsG2Generator.mulBy ((blsModulus - z) % blsModulus)
+  -- P_minus_y = commitment + G1 * ((BLS_MODULUS - y) % BLS_MODULUS)
+  let pMinusY : BLSP :=
+    commitment + blsG1Generator.mulBy ((blsModulus - y) % blsModulus)
+  -- pairing_check[((P_minus_y, -G2), (proof, X_minus_z))]: the product of the
+  -- two Miller loops, final-exponentiated, must equal 1.
+  match blsPairing (-blsG2Generator) pMinusY (finalExp := false),
+        blsPairing xMinusZ proof (finalExp := false) with
+  | some t1, some t2 =>
+      (t1 * t2) ^ ((blsPrime ^ 12 - 1) / blsCurveOrder) = 1
+  | _, _ => false
+
+-- def verify_kzg_proof(commitment_bytes, z_bytes, y_bytes, proof_bytes).
+def verifyKzgProof (commitment z y proof : B8L) : Except String Bool := do
+  let comm ← decodeKzgG1 commitment
+  let zf ← bytesToBlsField z
+  let yf ← bytesToBlsField y
+  let prf ← decodeKzgG1 proof
+  pure (verifyKzgProofImpl comm zf yf prf)
+
+-- def kzg_commitment_to_versioned_hash(commitment): 0x01 || sha256(c)[1:].
+def kzgCommitmentToVersionedHash (commitment : B8L) : B8L :=
+  (0x01 : B8) :: ((B8L.sha256 commitment).toB8L.drop 1)
