@@ -18,6 +18,31 @@ The four committed `*.head.json` files contain the first 32 entries of their
 full upstream vectors. Regenerate them with the committed `jq '.[0:32]'`
 commands in `scripts/check-vectors.sh`; do not hand-edit them.
 
+## BLS constants generator
+
+`Elevm/BLSConst.lean` is generated from the following pinned local sources:
+
+- execution-specs commit
+  [`4198b9c5996713b268aed602739d5aa40e277694`](https://github.com/ethereum/execution-specs/tree/4198b9c5996713b268aed602739d5aa40e277694)
+- `py-ecc` version `8.0.0`, installed in that checkout's venv
+
+The generator does not clone repositories or install dependencies. Point it at
+an existing checkout; it verifies both pins before producing output:
+
+```sh
+~/execution-specs/venv/bin/python scripts/gen-bls-consts.py \
+  --execution-specs ~/execution-specs > Elevm/BLSConst.lean
+```
+
+`EELS_ROOT` may be used instead of the command-line option. To verify the
+committed constants without replacing them:
+
+```sh
+~/execution-specs/venv/bin/python scripts/gen-bls-consts.py \
+  --execution-specs ~/execution-specs > /tmp/BLSConst.lean
+cmp /tmp/BLSConst.lean Elevm/BLSConst.lean
+```
+
 ## EIP-2537 vectors
 
 Source commit: [`c6842c8115013524f5955d410c24e1748a615d07`](https://github.com/ethereum/EIPs/tree/c6842c8115013524f5955d410c24e1748a615d07)

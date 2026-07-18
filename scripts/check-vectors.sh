@@ -23,6 +23,50 @@ CONTROL_FILES=(
   modexp_eip2565.json
 )
 
+# This is a target manifest, not a directory scan: deleting a vector file must
+# make the gate fail rather than silently reducing the tested set.
+PRECOMPILE_FILES=(
+  pointEvaluation.json
+  add_G1_bls.json
+  fail-add_G1_bls.json
+  blsG1Add.json
+  fail-blsG1Add.json
+  mul_G1_bls.json
+  fail-mul_G1_bls.json
+  msm_G1_bls.head.json
+  fail-msm_G1_bls.json
+  blsG1Mul.json
+  fail-blsG1Mul.json
+  blsG1MultiExp.head.json
+  fail-blsG1MultiExp.json
+  add_G2_bls.json
+  fail-add_G2_bls.json
+  blsG2Add.json
+  fail-blsG2Add.json
+  mul_G2_bls.json
+  fail-mul_G2_bls.json
+  msm_G2_bls.head.json
+  fail-msm_G2_bls.json
+  blsG2Mul.json
+  fail-blsG2Mul.json
+  blsG2MultiExp.head.json
+  fail-blsG2MultiExp.json
+  pairing_check_bls.json
+  fail-pairing_check_bls.json
+  blsPairing.json
+  fail-blsPairing.json
+  map_fp_to_G1_bls.json
+  fail-map_fp_to_G1_bls.json
+  blsMapG1.json
+  fail-blsMapG1.json
+  map_fp2_to_G2_bls.json
+  fail-map_fp2_to_G2_bls.json
+  blsMapG2.json
+  fail-blsMapG2.json
+)
+
+EXPECTED_FILES=("${CONTROL_FILES[@]}" "${PRECOMPILE_FILES[@]}")
+
 # Regenerate compact MSM samples from the pinned full files in
 # scripts/vectors/SOURCES.md:
 #   jq '.[0:32]' msm_G1_bls.json > scripts/vectors/msm_G1_bls.head.json
@@ -58,8 +102,20 @@ is_control_file() {
   return 1
 }
 
+is_expected_file() {
+  local file="$1"
+  local expected
+  for expected in "${EXPECTED_FILES[@]}"; do
+    [ "$file" = "$expected" ] && return 0
+  done
+  return 1
+}
+
 control_passes=0
-unknown_files=0
+passed_files=0
+failed_files=0
+missing_files=0
+configuration_errors=0
 
 run_vector_file() {
   local file="$1"
@@ -72,13 +128,13 @@ run_vector_file() {
   addr="$(get_addr "$file")"
   path="$VECTORS_DIR/$file"
   if [ ! -f "$path" ]; then
-    printf 'WARNING: missing vector file %s\n' "$file" | tee -a "$REPORT"
-    unknown_files=$((unknown_files + 1))
+    printf 'MISSING\t%s\n' "$file" | tee -a "$REPORT"
+    missing_files=$((missing_files + 1))
     return
   fi
   if [ -z "$addr" ]; then
-    printf 'WARNING: unknown address for %s\n' "$file" | tee -a "$REPORT"
-    unknown_files=$((unknown_files + 1))
+    printf 'CONFIGURATION ERROR: unknown address for %s\n' "$file" | tee -a "$REPORT"
+    configuration_errors=$((configuration_errors + 1))
     return
   fi
 
@@ -92,8 +148,10 @@ run_vector_file() {
   runner_status=${PIPESTATUS[0]}
   if [ "$runner_status" -eq 0 ]; then
     verdict="OK"
+    passed_files=$((passed_files + 1))
   else
     verdict="RED"
+    failed_files=$((failed_files + 1))
   fi
   printf 'MATRIX\t%s\t%s\t%s\n' "$group" "$verdict" "$file" | tee -a "$REPORT"
   if [ "$group" = "control" ] && [ "$runner_status" -eq 0 ]; then
@@ -107,20 +165,32 @@ for file in "${CONTROL_FILES[@]}"; do
 done
 
 printf '%s\n' '--- Running BLS and point-evaluation files ---' | tee -a "$REPORT"
-shopt -s nullglob
-for path in "$VECTORS_DIR"/*.json; do
-  file="$(basename "$path")"
-  if is_control_file "$file"; then
-    continue
-  fi
+for file in "${PRECOMPILE_FILES[@]}"; do
   run_vector_file "$file"
 done
 
+# An unlisted JSON file is also a configuration error: otherwise a newly
+# added vector could sit in the directory without ever being executed.
+shopt -s nullglob
+for path in "$VECTORS_DIR"/*.json; do
+  file="$(basename "$path")"
+  if ! is_expected_file "$file"; then
+    printf 'CONFIGURATION ERROR: unexpected vector file %s\n' "$file" | tee -a "$REPORT"
+    configuration_errors=$((configuration_errors + 1))
+  fi
+done
+
 control_total="${#CONTROL_FILES[@]}"
-if [ "$control_passes" -eq "$control_total" ] && [ "$unknown_files" -eq 0 ]; then
-  printf 'OK — vectors: controls %s/%s PASS; full matrix in %s\n' "$control_passes" "$control_total" "$REPORT"
+expected_total="${#EXPECTED_FILES[@]}"
+if [ "$passed_files" -eq "$expected_total" ] && \
+   [ "$failed_files" -eq 0 ] && \
+   [ "$missing_files" -eq 0 ] && \
+   [ "$configuration_errors" -eq 0 ]; then
+  printf 'OK — vectors: %s/%s files PASS; controls %s/%s PASS; full matrix in %s\n' \
+    "$passed_files" "$expected_total" "$control_passes" "$control_total" "$REPORT"
   exit 0
 fi
-printf 'RED — vectors: controls %s/%s PASS, %s unknown files; target not met; see %s\n' \
-  "$control_passes" "$control_total" "$unknown_files" "$REPORT"
+printf 'RED — vectors: %s/%s files PASS; %s failed, %s missing, %s configuration errors; controls %s/%s PASS; see %s\n' \
+  "$passed_files" "$expected_total" "$failed_files" "$missing_files" \
+  "$configuration_errors" "$control_passes" "$control_total" "$REPORT"
 exit 1
