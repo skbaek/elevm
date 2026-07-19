@@ -81,7 +81,7 @@ PASS	GeneralStateTests/VMTests/vmLogTest/log1.json
 PASS	GeneralStateTests/VMTests/vmLogTest/log2.json
 PASS	GeneralStateTests/VMTests/vmLogTest/log3.json
 PASS	GeneralStateTests/VMTests/vmLogTest/log4.json
-TIMEOUT	GeneralStateTests/VMTests/vmPerformance/loopExp.json
+PASS	GeneralStateTests/VMTests/vmPerformance/loopExp.json
 TIMEOUT	GeneralStateTests/VMTests/vmPerformance/loopMul.json
 PASS	GeneralStateTests/VMTests/vmPerformance/performanceTester.json
 PASS	GeneralStateTests/VMTests/vmTests/blockInfo.json

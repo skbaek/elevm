@@ -566,18 +566,6 @@ def B256.teg (xs : B256) (n : Nat) : Bool :=
   then xs.2.teg n
   else xs.1.teg (n - 128)
 
-def B256.bexpCore : Nat → B256 → B256 → (B256 × B256)
- | 0, xs, _ => ⟨1, xs⟩
- | n + 1, xs, ys =>
-   let ⟨r, s⟩ := B256.bexpCore n xs ys
-   let y : Bool := ys.teg n
-   ⟨(cond y s 1) * r, s * s⟩
-
-def B256.bexp (xs ys : B256) : B256 :=
-  (B256.bexpCore 256 xs ys).fst
-
-instance : HPow B256 B256 B256 := ⟨B256.bexp⟩
-
 /-- Efficient modular exponentiation using the square-and-multiply algorithm -/
 def Nat.powMod (base exp m : Nat) : Nat :=
   if m ≤ 1 then 0 else
@@ -589,6 +577,11 @@ def Nat.powMod (base exp m : Nat) : Nat :=
         let b' := (b * b) % m
         go (e / 2) b' res'
     go exp base 1
+
+def B256.bexp (xs ys : B256) : B256 :=
+  (Nat.powMod xs.toNat ys.toNat (2 ^ 256)).toB256
+
+instance : HPow B256 B256 B256 := ⟨B256.bexp⟩
 
 def String.joinln : List String → String :=
   String.intercalate "\n"
