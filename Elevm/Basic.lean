@@ -1444,9 +1444,11 @@ def B256.eq_check  (x y : B256) : B256 := if x = y then 1 else 0
 
 def ceilDiv (m n : Nat) := m / n + if m % n = 0 then 0 else 1
 
-def B32.rol (x n : B32) : B32 :=
+-- Inlined: these are three instructions each and sit in the SHA-256 and
+-- RIPEMD-160 round loops, where the call overhead dominated the work.
+@[inline] def B32.rol (x n : B32) : B32 :=
   x <<< n ||| (x >>> (32 - n))
-def B32.ror (x n : B32): B32 :=
+@[inline] def B32.ror (x n : B32): B32 :=
   x >>> n ||| (x <<< (32 - n))
 
 def B32s.toB64 (x y : B32) : B64 :=

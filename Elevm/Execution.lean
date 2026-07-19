@@ -2990,6 +2990,8 @@ def blake2IV : List B64 :=
     0x5BE0CD19137E2179
   ]
 
+-- Reference for the word indices unrolled into `Blake2.round`: row `i` is the
+-- `(a, b, c, d)` quadruple mixed by the `i`th `Blake2.g` call of a round.
 def blake2MixTable : Array (Array Nat) :=
   #[
     #[0, 4, 8, 12],
@@ -3040,35 +3042,48 @@ def b2wR3 : B64 := 48
 def b2wR4 : B64 := 1
 
 -- def G
+-- The four touched words are read once, mixed entirely in local scalars, and
+-- written back once: the intermediate `set!`/`get!` round trips of the
+-- transcribed reference version are redundant, since every word re-read is
+-- the value just computed.
 def Blake2.g (v : Array B64) (a b c d : Nat) (x y : B64) : Array B64 :=
-  let na : B64 := ((v[a]!) + (v[b]!) + x)
-  let v := v.set! a na
-  let shiftArg : B64 := (v[d]! ^^^ na)
-  let nd : B64 := ((shiftArg >>> b2R1) ^^^ (shiftArg <<< b2wR1)) -- % b2.maxWord
-  let v := v.set! d nd
-  let nc := (v[c]! + nd) -- % b2.maxWord
-  let v := v.set! c nc
-  let shiftArg : B64 := (v[b]! ^^^ v[c]!)
-  let nb := ((shiftArg >>> b2R2) ^^^ (shiftArg <<< b2wR2)) -- % b2maxWord
-  let v := v.set! b nb
-  let na := (v[a]! + nb + y) -- % b2maxWord
-  let v := v.set! a na
-  let shiftArg : B64 := (v[d]! ^^^ v[a]!)
-  let nd := ((shiftArg >>> b2R3) ^^^ (shiftArg <<< b2wR3)) -- % b2maxWord
-  let v := v.set! d nd
-  let nc := (v[c]! + nd) -- % b2maxWord
-  let v := v.set! c nc
-  let shiftArg : B64 := (v[b]! ^^^ nc)
-  let v := v.set! b <| ((shiftArg >>> b2R4) ^^^ (shiftArg <<< b2wR4)) -- % b2.maxWord
-  v
+  let va : B64 := v[a]!
+  let vb : B64 := v[b]!
+  let vc : B64 := v[c]!
+  let vd : B64 := v[d]!
+  let va : B64 := va + vb + x
+  let s : B64 := vd ^^^ va
+  let vd : B64 := (s >>> b2R1) ^^^ (s <<< b2wR1)
+  let vc : B64 := vc + vd
+  let s : B64 := vb ^^^ vc
+  let vb : B64 := (s >>> b2R2) ^^^ (s <<< b2wR2)
+  let va : B64 := va + vb + y
+  let s : B64 := vd ^^^ va
+  let vd : B64 := (s >>> b2R3) ^^^ (s <<< b2wR3)
+  let vc : B64 := vc + vd
+  let s : B64 := vb ^^^ vc
+  let vb : B64 := (s >>> b2R4) ^^^ (s <<< b2wR4)
+  (((v.set! a va).set! b vb).set! c vc).set! d vd
 
-def iterRange {ξ : Type} (k : Nat) (f : Nat → ξ → ξ) (x : ξ) : ξ :=
-  let rec aux : Nat → Nat → ξ → ξ
-    | _, 0, x => x
-    | m, n + 1, x =>
-      let i := m - (n + 1)
-      aux m n <| f i x
-  aux k k x
+-- One full mixing round, with `blake2MixTable` unrolled into literal word
+-- indices; `m` is an `Array` so the message words are indexed rather than
+-- walked as a list.
+def Blake2.round (m : Array B64) (s : Array Nat) (v : Array B64) : Array B64 :=
+  let v := Blake2.g v 0 4 8 12 (m[s[0]!]!) (m[s[1]!]!)
+  let v := Blake2.g v 1 5 9 13 (m[s[2]!]!) (m[s[3]!]!)
+  let v := Blake2.g v 2 6 10 14 (m[s[4]!]!) (m[s[5]!]!)
+  let v := Blake2.g v 3 7 11 15 (m[s[6]!]!) (m[s[7]!]!)
+  let v := Blake2.g v 0 5 10 15 (m[s[8]!]!) (m[s[9]!]!)
+  let v := Blake2.g v 1 6 11 12 (m[s[10]!]!) (m[s[11]!]!)
+  let v := Blake2.g v 2 7 8 13 (m[s[12]!]!) (m[s[13]!]!)
+  Blake2.g v 3 4 9 14 (m[s[14]!]!) (m[s[15]!]!)
+
+-- `n` counts rounds remaining out of `k`, so the round index is `k - n`.
+def Blake2.rounds (m : Array B64) (k : Nat) : Nat → Array B64 → Array B64
+  | 0, v => v
+  | n + 1, v =>
+    let r := k - (n + 1)
+    Blake2.rounds m k n (Blake2.round m (blake2Sigma[r % blake2Sigma.size]!) v)
 
 -- compress
 def bCompress (numRounds : Nat)
@@ -3084,20 +3099,7 @@ def bCompress (numRounds : Nat)
       0
     ]
 
-  let innerFun (s : Array Nat) (i : Nat) (v : Array B64) : Array B64 :=
-    Blake2.g v
-      ((blake2MixTable[i]!)[0]!)
-      ((blake2MixTable[i]!)[1]!)
-      ((blake2MixTable[i]!)[2]!)
-      ((blake2MixTable[i]!)[3]!)
-      m[s[i * 2]!]!
-      m[s[(i * 2) + 1]!]!
-
-  let outerFun (r : Nat) (v : Array B64) : Array B64 :=
-    let s : Array Nat := blake2Sigma[r % blake2Sigma.size]!
-    iterRange 8 (innerFun s) v
-
-  let arr := iterRange numRounds outerFun ⟨v⟩
+  let arr := Blake2.rounds ⟨m⟩ numRounds numRounds ⟨v⟩
   let v := arr.toList
   let resultMsgWords :=
     (List.range 8).map <| fun i => h[i]! ^^^ v[i]! ^^^ v[(i + 8)]!

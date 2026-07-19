@@ -668,6 +668,111 @@ forfeits nothing downstream. It exists because two of the four visible
 timeouts live here and nowhere near `B256` — the clearest illustration of
 why attribution precedes architecture.
 
+### Step-6 outcome and findings carried to Step 7 (recorded 2026-07-20)
+
+Executed, both halves (no 6a/6b split needed). **`static_Call50000_sha256`
+flips TIMEOUT → PASS**; `CALLBlake2f_MaxRounds` does not, and cannot — the
+honest factor and the reason are below. Baselines edited per rule 6 in the
+same commit (`baseline-full.txt`, `baseline-smoke.txt`; no other tier lists
+the file). Note that the `baseline-full.txt` line was flipped on TARGET
+per-file evidence, not on a FULL run: rule 9 does not schedule FULL again
+until Step 7, which is where that edit gets its tier-level confirmation.
+
+**Profiles taken before touching anything** (macOS `sample`, 10 s, main
+thread; self time):
+
+| `static_Call50000_sha256` | samples | share |
+|---|---:|---:|
+| `lean_dec_ref_cold` + `mi_free` + `mi_malloc_small` | 2,983 | ~37% |
+| `lean_list_to_array` + `List_lengthTR` + `lean_array_push` | 1,972 | ~24% |
+| `List_foldl` @ `SHA256_consumeChunk` | 572 | ~7.0% |
+| `SHA256_computeTemps` | 472 | ~5.8% |
+
+`SHA256.run` was **88% inclusive**. The 24% row and most of the 37% row
+trace to one site: `consumeChunk` rebuilt the eight working variables as an
+`Array` *literal* (`⟨[...]⟩` → `lean_list_to_array`) on **every one of the
+64 rounds**, 4,020 samples inclusive — ~44% of total time in a line that
+does no arithmetic.
+
+| `CALLBlake2f_MaxRounds` | samples | share |
+|---|---:|---:|
+| `lean_dec_ref_cold` + `mi_free` + `mi_malloc_small` | 3,137 | ~37% |
+| `l_List_get!Internal` | 1,473 | ~17% |
+| `Blake2_g` | 1,311 | ~15% |
+| `bCompress` closures + `lean_apply_2` + `iterRange` | 1,060 | ~13% |
+
+The 17% row is pure list traversal: `m` was a `List B64` indexed as
+`m[s[i*2]!]!` in the inner loop.
+
+**What changed.** (a) `SHA256.consumeChunk` → a specialized `SHA256.rounds`
+carrying the eight working variables as scalars, `w` updated in place, the
+`i = 0` test replaced by `t < 16`; `computeTemps`/`computeNewEntry`/
+`getAddMod`/`indices` deleted (no in-repo or blanc references). (b)
+`Blake2.g` reads its four words once and writes back once — the reference
+transcription's intermediate `set!`/`get!` round trips were re-reading
+values it had just computed; plus `Blake2.round` (mix table unrolled to
+literal indices, `m` an `Array`) and `Blake2.rounds` replacing the
+`iterRange`-plus-closures driver. `blake2MixTable` is kept, unused, as the
+documented reference for the unrolled indices. (c) `@[inline]` on
+`B32.rol`/`B32.ror`, and `data.length` hoisted in `SHA256.run`. Net −113
+source lines in `Hash.lean`/`Execution.lean`.
+
+**Gates.** V0 green. U256 21513/21513 PASS. VEC 42/42 files PASS, controls
+5/5 (re-run on the final binary; the earlier run predated the `ror` inline).
+SMOKE 175 files match the edited baseline (173 PASS / 1 FAIL / 1 TIMEOUT —
+the known out-of-scope `EmptyTransaction` FAIL and `loopMul`). TARGET:
+`static_Call50000_sha256` PASS 87.11 s, `CALLBlake2f_MaxRounds` TIMEOUT
+100.02 s. BENCH `step6`: B256 rows unchanged within noise (no B256 code
+touched); the `exp` swing 166 → 2583 ns/op is the degenerate-sink artifact
+the bench header already documents — step6's non-zero sink makes 2583 the
+honest reading, not a regression.
+
+**Timings, same machine, uncontended before and after:**
+
+| instrument | before | after | factor |
+|---|---:|---:|---:|
+| `static_Call50000_sha256` (uncapped) | 415.98 s | 89.04 s | **4.67×** |
+| `blake2F.json` vectors (8,000,013 rounds) | 5.76 s | 1.29 s | **4.5×** |
+| `CALLBlake2f_MaxRounds` (uncapped) | — | 763 s | — |
+
+Four things Step 7 should carry from this:
+
+1. **The sha flip is real but its margin is thin: 87.11 s against a 100 s
+   cap, ~13% headroom.** SMOKE and FULL both list this file, so a slower
+   reporting machine will reclassify it and both tiers will report REVIEW.
+   If Step 7 sees that, it is machine speed, not a regression — but the
+   durable fix is to raise `ELEVM_TIMEOUT` for these tiers, and that
+   decision is the user's, not an agent's.
+2. **`CALLBlake2f_MaxRounds` is unflippable and should be reclassified, not
+   optimized.** Uncapped it is 763 s (measured under concurrent load; the
+   blake2F vector rate projects ~690 s clean) — ~7× over the cap *after* a
+   4.5× win. At 4,294,967,295 rounds no constant-factor work in this family
+   reaches 100 s; only a sanctioned permanent-TIMEOUT annotation or a
+   per-file timeout override resolves it honestly. This confirms the
+   expectation the plan registered in advance.
+3. **The remaining sha cost is the byte representation, not the hash.**
+   After the change `SHA256.run` is 49% inclusive (was 88%), and what
+   dominates inside it is `List_lengthTR` (~13%), `List_splitToArray_aux`
+   (~9%) and `Array_sliceD_aux` (~6.5%) — i.e. `B8L = List B8` walking and
+   `Mem_read`. That is precisely D8's deferred byte/`ByteArray` arc, so the
+   step stopped at the scope line. Step 7's closing report should revise
+   that arc's priors upward: it is now the top cost in a formerly
+   SHA-bound fixture.
+4. **Attribution caveat, honestly held.** The 4.67× is the whole step's
+   effect. Of the three changes, the `consumeChunk` specialization and the
+   `ror` inline both moved the number materially (the latter was 15.5% self
+   time and vanishes from the after-profile); the `data.length` hoist did
+   **not** measurably help — the after-profile still shows one `lengthTR`
+   walk under `SHA256.run`, so the compiler had already shared it. It is
+   kept for clarity, not for speed, and should not be credited in Step 7's
+   per-change table.
+
+Also new: `scripts/bench-u256.lean` gains `sha256` (1528 ns/op) and
+`blake2f-12` (5052 ns/op) rows so Step 7 can re-run per-loop numbers
+directly. These rows have **no pre-step counterpart** — they establish the
+baseline from here; the before/after evidence above comes from the fixture
+and vector-file instruments, not from them.
+
 ---
 
 ## Step 7 — Integration point B, harvest A, and the Phase-B gate

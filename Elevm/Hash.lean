@@ -147,8 +147,6 @@ def B8L.toChunks (lenB8L : B8L) : Nat → B8L → Nat → List B8A
   | _ + 1, xs, _ =>
     [⟨xs ++ (0x80 :: List.replicate (64 - (xs.length + 9)) 0x00) ++ lenB8L⟩]
 
-def getAddMod (w : B32A) (j n : Nat) := (w.getD ((j + n) % 16) 0)
-
 def roundConstants : B32A :=
  #[ 0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -167,71 +165,47 @@ def roundConstants : B32A :=
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2 ]
 
-def computeNewEntry (w : B32A) (p : B8A) (i j : Nat) : B32 :=
-  if i = 0
-  then
-    B8s.toB32
-      (p.getD (4 * j) 0)
-      (p.getD ((4 * j) + 1) 0)
-      (p.getD ((4 * j) + 2) 0)
-      (p.getD ((4 * j) + 3) 0)
-  else
+-- The 64 compression rounds, specialized: the eight working variables are
+-- carried as scalars rather than rebuilt as an `Array` literal each round,
+-- and the message schedule `w` is updated in place. `n` counts rounds
+-- remaining, so the round index is `t = 64 - n`; rounds `t < 16` read the
+-- chunk, later rounds extend the schedule.
+def rounds (p : B8A) :
+  Nat → B32A → B32 → B32 → B32 → B32 → B32 → B32 → B32 → B32 → B32A
+  | 0, _, a, b, c, d, e, f, g, h => ⟨[a, b, c, d, e, f, g, h]⟩
+  | n + 1, w, a, b, c, d, e, f, g, h =>
+    let t : Nat := 64 - (n + 1)
+    let j : Nat := t % 16
+    let wj : B32 :=
+      if t < 16 then
+        B8s.toB32
+          (p.getD (4 * j) 0)
+          (p.getD ((4 * j) + 1) 0)
+          (p.getD ((4 * j) + 2) 0)
+          (p.getD ((4 * j) + 3) 0)
+      else
+        let x1 : B32 := w.getD ((j + 1) % 16) 0
+        let x14 : B32 := w.getD ((j + 14) % 16) 0
+        let s0 : B32 :=
+          (B32.ror x1 7) ^^^ (B32.ror x1 18) ^^^ (x1 >>> 3)
+        let s1 : B32 :=
+          (B32.ror x14 17) ^^^ (B32.ror x14 19) ^^^ (x14 >>> 10)
+        (w.getD j 0) + s0 + (w.getD ((j + 9) % 16) 0) + s1
+    let w' := Array.set! w j wj
+    let s1 : B32 :=
+      (B32.ror e 6) ^^^ (B32.ror e 11) ^^^ (B32.ror e 25)
+    let ch : B32 := (e &&& f) ^^^ ((~~~ e) &&& g)
+    let temp1 : B32 := h + s1 + ch + (roundConstants[t]!) + wj
     let s0 : B32 :=
-      (B32.ror (getAddMod w j 1) 7) ^^^
-      (B32.ror (getAddMod w j 1) 18) ^^^
-      ((getAddMod w j 1) >>> 3)
-    let s1 :=
-      (B32.ror (getAddMod w j 14) 17) ^^^
-      (B32.ror (getAddMod w j 14) 19) ^^^
-      ((getAddMod w j 14) >>> 10)
-    (w.getD j 0) + s0 + (getAddMod w j 9) + s1
-
-def computeTemps (ah w' : B32A) (i j : Nat): B32 × B32 :=
-  let s1 : B32 :=
-    (B32.ror (ah[4]!) 6) ^^^
-    (B32.ror (ah[4]!) 11) ^^^
-    (B32.ror (ah[4]!) 25)
-  let ch : B32 :=
-    (ah[4]! &&& ah[5]!) ^^^
-    ((~~~ (ah[4]!)) &&& ah[6]!)
-  let temp1 : B32 :=
-    (ah[7]!) + s1 + ch +
-    (roundConstants[(i * 16) + j]!) +
-    (w'[j]!)
-  let s0 : B32 :=
-    (B32.ror (ah[0]!) 2) ^^^
-    (B32.ror (ah[0]!) 13) ^^^
-    (B32.ror (ah[0]!) 22)
-  let maj : B32 :=
-    (ah[0]! &&& ah[1]!) ^^^
-    (ah[0]! &&& ah[2]!) ^^^
-    (ah[1]! &&& ah[2]!)
-  let temp2 : B32 := s0 + maj
-  ⟨temp1, temp2⟩
-
-def indices : List (Nat × Nat) :=
-  [
-    (0, 0), (0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (0, 6), (0, 7),
-    (0, 8), (0, 9), (0, 10), (0, 11), (0, 12), (0, 13), (0, 14), (0, 15),
-    (1, 0), (1, 1), (1, 2), (1, 3), (1, 4), (1, 5), (1, 6), (1, 7),
-    (1, 8), (1, 9), (1, 10), (1, 11), (1, 12), (1, 13), (1, 14), (1, 15),
-    (2, 0), (2, 1), (2, 2), (2, 3), (2, 4), (2, 5), (2, 6), (2, 7),
-    (2, 8), (2, 9), (2, 10), (2, 11), (2, 12), (2, 13), (2, 14), (2, 15),
-    (3, 0), (3, 1), (3, 2), (3, 3), (3, 4), (3, 5), (3, 6), (3, 7),
-    (3, 8), (3, 9), (3, 10), (3, 11), (3, 12), (3, 13), (3, 14), (3, 15)
-  ]
+      (B32.ror a 2) ^^^ (B32.ror a 13) ^^^ (B32.ror a 22)
+    let maj : B32 := (a &&& b) ^^^ (a &&& c) ^^^ (b &&& c)
+    let temp2 : B32 := s0 + maj
+    rounds p n w' (temp1 + temp2) a b c (d + temp1) e f g
 
 def consumeChunk (h : B32A) (p : B8A) : B32A :=
-  let aux : (B32A × B32A) → (Nat × Nat) → B32A × B32A
-    | ⟨h, w⟩, ⟨i, j⟩ =>
-      let newEntry : B32 := computeNewEntry w p i j
-      let w' := Array.set! w j newEntry
-      let ⟨temp1, temp2⟩ := computeTemps h w' i j
-      let h' :=
-        ⟨ [ temp1 + temp2, h[0]!, h[1]!, h[2]!,
-            h[3]! + temp1, h[4]!, h[5]!, h[6]! ] ⟩
-      ⟨h', w'⟩
-  let h' := List.foldl aux ⟨h, .replicate 16 0⟩ indices |>.fst
+  let h' : B32A :=
+    rounds p 64 (Array.replicate 16 0)
+      h[0]! h[1]! h[2]! h[3]! h[4]! h[5]! h[6]! h[7]!
   ⟨
     [
       h[0]! + h'[0]!,
@@ -246,12 +220,14 @@ def consumeChunk (h : B32A) (p : B8A) : B32A :=
   ⟩
 
 def run (data : B8L) : B256 :=
+  -- `data` is a list, so its length is an O(n) walk: take it once.
+  let len : Nat := data.length
   let xss : List B8A :=
     B8L.toChunks
-      (B64.toB8L (data.length * 8).toUInt64)
-      (data.length / 64).succ
+      (B64.toB8L (len * 8).toUInt64)
+      (len / 64).succ
       data
-      data.length
+      len
   let hash := List.foldl consumeChunk initChunk xss
   match hash with
   | ⟨[x0, x1, x2, x3, y0, y1, y2, y3]⟩ =>

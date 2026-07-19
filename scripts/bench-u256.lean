@@ -1,4 +1,5 @@
 import Elevm.Basic
+import Elevm.Execution
 
 /-!
 Step-1 U256 microbenchmark instrument.
@@ -47,6 +48,26 @@ def bench (label : String) (iterations : Nat) (nonce : Nat)
   let finish ← IO.monoNanosNow
   IO.println s!"{label}\t{(finish - start) / iterations} ns/op\titerations={iterations}\tsink={sink.toHex}"
 
+@[noinline] def forceB8L (x : B8L) : IO B8L := pure x
+
+-- BLAKE2b compression driver: the same forced-sequencing discipline as
+-- `bench`, but the loop output is a byte list, and each iteration's digest is
+-- folded back into the next iteration's message so the call cannot be hoisted.
+def benchBlake2 (label : String) (iterations : Nat) (nonce : Nat)
+    (numRounds : Nat) : IO Unit := do
+  let h : List B64 := blake2IV
+  let rec go : Nat → List B64 → List B64
+    | 0, m => m
+    | k + 1, m =>
+      let out := (bCompress numRounds h m 0 0 false).getD []
+      go k (m.set 0 ((B8L.toB64 (out.take 8)) ^^^ (k.toUInt64)))
+  let m0 : List B64 := (List.range 16).map (fun i => (nonce + i).toUInt64)
+  let start ← IO.monoNanosNow
+  let sink ← forceB8L
+    ((bCompress numRounds h (go iterations m0) 0 0 false).getD [])
+  let finish ← IO.monoNanosNow
+  IO.println s!"{label}\t{(finish - start) / iterations} ns/op\titerations={iterations}\tsink={sink.take 4}"
+
 def main : IO Unit := do
   let nonce ← IO.monoNanosNow
   bench "add" 1000000 nonce (fun i x => x + sample + i.toB256)
@@ -57,3 +78,9 @@ def main : IO Unit := do
   bench "div-3" 20000 nonce (fun i x => x / 3 + sample + i.toB256)
   bench "exp" 100 nonce (fun i x => B256.bexp x (i + 1).toB256)
   bench "codec" 200000 nonce (fun i x => (x + i.toB256).toB8L.toB256)
+  -- Step-6 precompile inner-loop rows.  `sha256` hashes a fresh 32-byte list
+  -- per iteration (one padded chunk, so one full 64-round compression);
+  -- `blake2f-12` runs one 12-round BLAKE2b compression, the round count of
+  -- the EIP-152 reference vectors.
+  bench "sha256" 100000 nonce (fun i x => B8L.sha256 (x + i.toB256).toB8L)
+  benchBlake2 "blake2f-12" 100000 nonce 12
