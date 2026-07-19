@@ -456,80 +456,13 @@ def List.sliceD {ξ : Type u} (xs : List ξ) (m n : Nat) (x : ξ) : List ξ :=
 def List.slice! {ξ : Type u} [Inhabited ξ] (xs : List ξ) (m n : Nat) : List ξ :=
   takeD n (drop m xs) default
 
-def B64.lows' (i : B64) : B64 := (i &&& 0x00000000FFFFFFFF)
-def B64.highs' (i : B64) : B64 := (i >>> 32)
-
-def B64.mulx (x y : B64) : B128 :=
-  let xh := x.highs'
-  let xl := x.lows'
-  let yh := y.highs'
-  let yl := y.lows'
-  let ll := xl * yl
-  let lh := xl * yh
-  let hl := xh * yl
-  let hh := xh * yh
-  let lhl := lh <<< 32
-  let hll := hl <<< 32
-  let lt := ll + lhl
-  let l := lt + hll
-  let c : B64 :=
-    match (lt < ll : Bool), (l < lt : Bool) with
-    | true, true => 2
-    | false, false => 0
-    | _, _  => 1
-  let h := hh + lh.highs' + hl.highs' + c --0 + c1
-  ⟨h, l⟩
-
-def B128.mulx (x y : B128) : B256 :=
-  let ll := B64.mulx x.2 y.2
-  let lh := B64.mulx x.2 y.1
-  let hl := B64.mulx x.1 y.2
-  let hh := B64.mulx x.1 y.1
-  let lhl : B128 := ⟨lh.2, 0⟩
-  let hll : B128 := ⟨hl.2, 0⟩
-  let lt := ll + lhl
-  let l := lt + hll
-  let c : B128 :=
-    match (lt < ll : Bool), (l < lt : Bool) with
-    | true, true => ⟨0, 2⟩
-    | false, false => ⟨0, 0⟩
-    | _, _  => ⟨0, 1⟩
-  let h := hh + ⟨0, lh.1⟩ + ⟨0, hl.1⟩ + c --0 + c1
-  ⟨h, l⟩
-
-def B256.mul (x y : B256) : B256 :=
-  let ll := B128.mulx x.2 y.2
-  let lh := B128.mulx x.2 y.1
-  let hl := B128.mulx x.1 y.2
-  ll + ⟨lh.2, 0⟩ + ⟨hl.2, 0⟩
+def B256.mul (x y : B256) : B256 := (x.toNat * y.toNat).toB256
 instance : HMul B256 B256 B256 := ⟨B256.mul⟩
 
-def divOffset : Nat → B256 → B256 → Option Nat
-  | 0, _, _ => some 0
-  | m + 1, x, y =>
-    if x < y
-    then none
-    else if B256.smin ≤ y
-         then some 0
-         else match divOffset m x (y <<< 1) with
-                   | none => some 0
-                   | some n => some (n + 1)
-
-
-def B256.divModCore : Nat → B256 → B256 → B256 → (B256 × B256)
-  | 0,     x, _, z => ⟨z, x⟩
-  | n + 1, x, y, z =>
-    if x < y
-    then divModCore n x (y >>> 1) (z <<< 1)
-    else divModCore n (x - y) (y >>> 1) ((z <<< 1) + 1)
 def B256.divMod (x y : B256) : B256 × B256 :=
   if y = 0
   then ⟨0, 0⟩
-  else let os := divOffset 255 x y
-       match os with
-       | none => ⟨0, x⟩
-       | some n =>
-         B256.divModCore (n + 1) x (y <<< n) 0
+  else ⟨(x.toNat / y.toNat).toB256, (x.toNat % y.toNat).toB256⟩
 
 instance : HDiv B256 B256 B256 := ⟨λ x y => (B256.divMod x y).fst⟩
 instance : HMod B256 B256 B256 := ⟨λ x y => (B256.divMod x y).snd⟩

@@ -247,6 +247,82 @@ lemma toB256_toNat (x : B256) : x.toNat.toB256 = x := by
 theorem B256.toNat_inj (xs ys : B256) (eq : xs.toNat = ys.toNat) : xs = ys := by
   rw [← toB256_toNat xs, ← toB256_toNat ys, eq]
 
+/-
+The `toNat` characterization of the `Nat`-routed word operations: the
+interface downstream developments consume instead of unfolding definitions.
+-/
+
+theorem B256.toNat_toB256 (n : Nat) : (Nat.toB256 n).toNat = n ↾ 256 := by
+  simp only [Nat.toB256, B256.toNat]; rw [toNat_toB128, toNat_toB128]
+  apply Nat.or_eq_lo_add
+
+theorem B256.toNat_toB256_of_lt {n : Nat} (h : n < 2 ^ 256) :
+    (Nat.toB256 n).toNat = n := by rw [B256.toNat_toB256, Nat.lo_eq_of_lt h]
+
+theorem B256.toNat_mul (x y : B256) :
+    (x * y).toNat = (x.toNat * y.toNat) ↾ 256 := B256.toNat_toB256 _
+
+theorem B256.div_zero (x : B256) : x / 0 = 0 := by
+  show (B256.divMod x 0).fst = 0; rw [B256.divMod, if_pos rfl]
+
+theorem B256.mod_zero (x : B256) : x % 0 = 0 := by
+  show (B256.divMod x 0).snd = 0; rw [B256.divMod, if_pos rfl]
+
+theorem B256.toNat_div {x y : B256} (h : y ≠ 0) :
+    (x / y).toNat = x.toNat / y.toNat := by
+  show (B256.divMod x y).fst.toNat = _
+  rw [B256.divMod, if_neg h]
+  exact B256.toNat_toB256_of_lt
+    (Nat.lt_of_le_of_lt (Nat.div_le_self _ _) (B256.toNat_lt x))
+
+theorem B256.toNat_mod {x y : B256} (h : y ≠ 0) :
+    (x % y).toNat = x.toNat % y.toNat := by
+  show (B256.divMod x y).snd.toNat = _
+  rw [B256.divMod, if_neg h]
+  exact B256.toNat_toB256_of_lt
+    (Nat.lt_of_le_of_lt (Nat.mod_le _ _) (B256.toNat_lt x))
+
+theorem Nat.powMod.go_eq {m : Nat} (hm : 1 < m) :
+    ∀ e b res, res < m → Nat.powMod.go m e b res = res * b ^ e % m := by
+  intro e
+  induction e using Nat.strong_induction_on with
+  | _ e ih =>
+    intro b res hres
+    match e with
+    | 0 => rw [Nat.powMod.go]; rw [Nat.pow_zero, Nat.mul_one, Nat.mod_eq_of_lt hres]
+    | n + 1 =>
+      rw [Nat.powMod.go]
+      have hlt : (n + 1) / 2 < n + 1 := Nat.div_lt_self (by omega) (by omega)
+      have hres' : (if (n + 1) % 2 = 1 then res * b % m else res) < m := by
+        split
+        · exact Nat.mod_lt _ (by omega)
+        · exact hres
+      rw [ih _ hlt _ _ hres']
+      rw [Nat.mul_mod _ (((b * b) % m) ^ ((n + 1) / 2)), ← Nat.pow_mod]
+      rw [show b * b = b ^ 2 from (Nat.pow_two b).symm, ← Nat.pow_mul]
+      rw [← Nat.mul_mod]
+      rcases Nat.mod_two_eq_zero_or_one n with he | he
+      · -- n even, so n + 1 is odd
+        have hpar : (n + 1) % 2 = 1 := by omega
+        have hk : 2 * ((n + 1) / 2) = n := by omega
+        rw [if_pos hpar, hk, Nat.mul_mod, Nat.mod_mod, ← Nat.mul_mod]
+        rw [Nat.mul_assoc, ← Nat.pow_succ']
+      · -- n odd, so n + 1 is even
+        have hpar : ¬ ((n + 1) % 2 = 1) := by omega
+        have hk : 2 * ((n + 1) / 2) = n + 1 := by omega
+        rw [if_neg hpar, hk]
+
+theorem Nat.powMod_eq {b e m : Nat} (hm : 1 < m) :
+    Nat.powMod b e m = b ^ e % m := by
+  unfold Nat.powMod
+  rw [if_neg (by omega), Nat.powMod.go_eq hm _ _ _ hm, Nat.one_mul]
+
+theorem B256.toNat_bexp (x y : B256) :
+    (x ^ y).toNat = (x.toNat ^ y.toNat) ↾ 256 := by
+  show (B256.bexp x y).toNat = _
+  rw [B256.bexp, B256.toNat_toB256, Nat.powMod_eq (by omega)]
+  exact Nat.mod_mod _ _
+
 lemma B128.lt_or_eq_of_le {n m : B128} (h : n ≤ m) : n < m ∨ n = m := by
   rcases h with h | h
   · left; left; apply h

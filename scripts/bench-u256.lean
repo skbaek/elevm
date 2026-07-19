@@ -8,6 +8,17 @@ standalone `lean -c` followed by `leanc -O2`; this benchmark is not a Lake
 target.  Timing a pure value that is only demanded after the second clock read
 can produce a bogus near-zero result, so every result is forced through the
 `@[noinline]` IO boundary below before the finish time is sampled.
+
+Inputs are salted with a per-run `nonce` taken from the clock, so exact
+operand streams differ across runs.  This is benign for the long-iteration
+rows, but the `exp` row (100 iterations, each output chained as the next
+base) is NOT comparable across runs: `Nat.powMod` cost tracks operand
+magnitude, and once the chain hits a base that truncates to 0 mod 2^256
+(visible as `sink=0...0`) the remaining iterations run on tiny `Nat`s and
+the row reads artificially fast — observed swings exceed 10x (e.g. 179 vs
+2471 ns/op on identical binaries, step 3).  Compare exp performance across
+revisions via fixture wall-clocks (`vmPerformance/loopExp.json`), not this
+row.
 -/
 
 def sample : B256 :=
