@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fixture-test harness for elevm (REFACTOR.md Phase 0, step 0.1).
 #
-# Usage: scripts/check.sh (--depth | --smoke | --full | --patch | --rlp4 | --bls | --dir <path>) [--rebase] [--no-build]
+# Usage: scripts/check.sh (--depth | --smoke | --full | --patch | --rlp4 | --bls | --dir <path>) [--report <path>] [--rebase] [--no-build]
 #
 #   --depth       run the fuel/call-depth stress set (scripts/depth-tests.txt)
 #   --smoke       run the smoke set (scripts/smoke-tests.txt)
@@ -15,9 +15,12 @@
 #                 the committed hand-authored target baseline
 #                 scripts/baseline-bls.txt (precomps.md Step 9); the fixture
 #                 root and per-file timeout defaults differ — see Environment
-#   --dir <path>  run every .json fixture under <path> (must be inside the
-#                 fixture root); ad hoc — if no baseline-dir.txt exists, the
-#                 gate passes iff every file PASSes
+#   --dir <path>  run one .json fixture, or every .json fixture under a
+#                 directory (the path must be inside the fixture root); ad hoc
+#                 — if no baseline-dir.txt exists, the gate passes iff every
+#                 selected file PASSes
+#   --report <p>  write this run's report to <p> instead of overwriting the
+#                 default scripts/report-<tier>.txt
 #   --rebase      accept the current results as the new committed baseline
 #                 (rejected for --patch/--rlp4: their desired result is fixed)
 #   --no-build    skip `lake build elevm`
@@ -25,6 +28,7 @@
 # --patch and --rlp4 are target gates, not baseline-comparison tiers: each
 # succeeds if and only if every listed file is PASS. They have no baseline and
 # never rebase. Their reports additionally record per-file elapsed wall time.
+# Ad-hoc --dir reports also record elapsed time for performance measurements.
 #
 # --bls compares against a committed baseline like the ordinary tiers, but the
 # baseline is a hand-authored target (all PASS unless an entry carries a
@@ -60,7 +64,7 @@ ROOT="$(dirname "$SCRIPT_DIR")"
 BIN="$ROOT/.lake/build/bin/elevm"
 
 usage() {
-  echo "usage: scripts/check.sh (--depth | --smoke | --full | --patch | --rlp4 | --bls | --dir <path>) [--rebase] [--no-build]" >&2
+  echo "usage: scripts/check.sh (--depth | --smoke | --full | --patch | --rlp4 | --bls | --dir <path>) [--report <path>] [--rebase] [--no-build]" >&2
   exit 2
 }
 
@@ -68,6 +72,7 @@ TIER=""
 DIR_PATH=""
 REBASE=0
 BUILD=1
+REPORT_PATH=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --depth|--smoke|--full|--patch|--rlp4|--bls) TIER="${1#--}" ;;
@@ -76,6 +81,11 @@ while [ $# -gt 0 ]; do
       shift
       [ $# -gt 0 ] || usage
       DIR_PATH="$1"
+      ;;
+    --report)
+      shift
+      [ $# -gt 0 ] || usage
+      REPORT_PATH="$1"
       ;;
     --rebase) REBASE=1 ;;
     --no-build) BUILD=0 ;;
@@ -136,11 +146,22 @@ case "$TIER" in
       | grep -v -e '^\.meta/' -e '/\.meta/' | sort)"
     ;;
   dir)
-    if [ ! -d "$DIR_PATH" ]; then
-      echo "REGRESSION — dir: not a directory: $DIR_PATH"
+    if [ ! -e "$DIR_PATH" ]; then
+      echo "REGRESSION — dir: path not found: $DIR_PATH"
       exit 1
     fi
-    ABS="$(cd "$DIR_PATH" && pwd)"
+    if [ -d "$DIR_PATH" ]; then
+      ABS="$(cd "$DIR_PATH" && pwd)"
+    elif [ -f "$DIR_PATH" ]; then
+      ABS="$(cd "$(dirname "$DIR_PATH")" && pwd)/$(basename "$DIR_PATH")"
+      case "$ABS" in
+        *.json) : ;;
+        *) echo "REGRESSION — dir: selected file is not JSON: $ABS"; exit 1 ;;
+      esac
+    else
+      echo "REGRESSION — dir: path is not a regular file or directory: $DIR_PATH"
+      exit 1
+    fi
     case "$ABS" in
       "$FIXTURES"|"$FIXTURES"/*) : ;;
       *)
@@ -148,7 +169,11 @@ case "$TIER" in
         exit 1
         ;;
     esac
-    FILES="$(find "$ABS" -name '*.json' | sed "s|^$FIXTURES/||" | sort)"
+    if [ -d "$ABS" ]; then
+      FILES="$(find "$ABS" -name '*.json' | sed "s|^$FIXTURES/||" | sort)"
+    else
+      FILES="${ABS#"$FIXTURES"/}"
+    fi
     ;;
 esac
 
@@ -169,8 +194,9 @@ if [ ! -x "$BIN" ]; then
   exit 1
 fi
 
-REPORT="$SCRIPT_DIR/report-$TIER.txt"
+REPORT="${REPORT_PATH:-$SCRIPT_DIR/report-$TIER.txt}"
 BASELINE="$SCRIPT_DIR/baseline-$TIER.txt"
+mkdir -p "$(dirname "$REPORT")"
 : > "$REPORT"
 
 NPASS=0
@@ -196,7 +222,7 @@ while IFS= read -r REL; do
   else
     CLS=FAIL; NFAIL=$((NFAIL + 1))
   fi
-  if [ "$IS_TARGET" -eq 1 ] || [ "$TIER" = "bls" ]; then
+  if [ "$IS_TARGET" -eq 1 ] || [ "$TIER" = "bls" ] || [ "$TIER" = "dir" ]; then
     printf '%s\t%ss\t%s\n' "$CLS" "$ELAPSED" "$REL" >> "$REPORT"
     printf '[%d/%d] %s %ss %s\n' "$I" "$TOTAL" "$CLS" "$ELAPSED" "$REL" >&2
   else
@@ -220,7 +246,11 @@ if [ "$IS_TARGET" -eq 1 ]; then
 fi
 
 if [ "$REBASE" -eq 1 ]; then
-  cp "$REPORT" "$BASELINE"
+  if [ "$TIER" = "dir" ]; then
+    cut -f1,3 "$REPORT" > "$BASELINE"
+  else
+    cp "$REPORT" "$BASELINE"
+  fi
   echo "OK — $TIER: baseline rebased with $TOTAL files ($SUMMARY)"
   exit 0
 fi
@@ -239,6 +269,10 @@ if [ "$TIER" = "bls" ]; then
   grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$BASELINE" > "$CMP_DIR/baseline"
   cut -f1,3 "$REPORT" > "$CMP_DIR/report"
   CMP_BASELINE="$CMP_DIR/baseline"
+  CMP_REPORT="$CMP_DIR/report"
+elif [ "$TIER" = "dir" ]; then
+  CMP_DIR="$(mktemp -d)"
+  cut -f1,3 "$REPORT" > "$CMP_DIR/report"
   CMP_REPORT="$CMP_DIR/report"
 fi
 

@@ -435,7 +435,80 @@ def runVectorFile (addr : Adr) (path : String) : IO Bool := do
     .println s!"RED — vectors: {passes}/{total} PASS, target not met"
     return false
 
+def Lean.Json.toIoU256Vectors (j : Lean.Json) : IO (List Lean.Json) :=
+  match j with
+  | .obj o => (o.get? "vectors").toIO "u256 vector file has no vectors array" >>= Lean.Json.toIoList
+  | .arr _ => Lean.Json.toIoList j -- accepted for simple external differential files
+  | _ => IO.throw "u256 vector file must be an object or array"
+
+def b256VectorResult (op : String) (xs : List B256) : Option B256 :=
+  match op, xs with
+  | "add", [x, y] => some (x + y)
+  | "sub", [x, y] => some (x - y)
+  | "mul", [x, y] => some (x * y)
+  | "div", [x, y] => some (x / y)
+  | "mod", [x, y] => some (x % y)
+  | "sdiv", [x, y] => some (B256.sdiv x y)
+  | "smod", [x, y] => some (B256.smod x y)
+  | "addmod", [x, y, z] => some (B256.addmod x y z)
+  | "mulmod", [x, y, z] => some (B256.mulmod x y z)
+  | "exp", [x, y] => some (x ^ y)
+  | "signextend", [x, y] => some (B256.signext x y)
+  | "lt", [x, y] => some (B256.lt_check x y)
+  | "gt", [x, y] => some (B256.gt_check x y)
+  | "slt", [x, y] => some (B256.slt_check x y)
+  | "sgt", [x, y] => some (B256.sgt_check x y)
+  | "eq", [x, y] => some (B256.eq_check x y)
+  | "iszero", [x] => some (B256.eq_check x 0)
+  | "and", [x, y] => some (x &&& y)
+  | "or", [x, y] => some (x ||| y)
+  | "xor", [x, y] => some (x ^^^ y)
+  | "not", [x] => some (~~~ x)
+  | "byte", [x, y] => some (List.getD y.toB8L x.toNat 0).toB256
+  | "shl", [x, y] => some (y <<< x.toNat)
+  | "shr", [x, y] => some (y >>> x.toNat)
+  | "sar", [x, y] => some (B256.arithShiftRight y x.toNat)
+  | "codec", [x] => some x.toB8L.toB256
+  | "bytecount", [x] => some x.bytecount.toB256
+  | "exp_gas", [x] => some (gExp + gExpbyte * x.bytecount).toB256
+  | _, _ => none
+
+def processU256Vector : (Nat × Lean.Json) → IO Bool
+  | ⟨idx, json⟩ => do
+    let op ← (json.find? "op" >>= Lean.Json.toString?).toIO s!"u256 vector {idx}: missing op"
+    let argsJ ← (json.find? "args").toIO s!"u256 vector {idx}: missing args" >>= Lean.Json.toIoList
+    let expectedJ ← (json.find? "expected").toIO s!"u256 vector {idx}: missing expected"
+    let expected ← match expectedJ with
+      | .str _ => Lean.Json.toIoB256 expectedJ
+      | _ => do
+        let n ← (String.toNat? (toString expectedJ)).toIO s!"u256 vector {idx}: invalid numeric expected"
+        pure n.toB256
+    let actual? ← match op with
+      | "keccak" => match argsJ with
+        | [arg] => pure (some ((← Lean.Json.toIoB8L arg).keccak))
+        | _ => pure none
+      | "ofB8L" => match argsJ with
+        | [arg] => pure (some (B8L.toB256 (← Lean.Json.toIoB8L arg)))
+        | _ => pure none
+      | _ => pure (b256VectorResult op (← argsJ.mapM Lean.Json.toIoB256))
+    match actual? with
+    | some actual =>
+      if actual = expected then IO.println s!"PASS\t{idx}\t{op}"; return true
+      else IO.println s!"FAIL\t{idx}\t{op}\texpected={expected.toHex}\tactual={actual.toHex}"; return false
+    | none => IO.println s!"FAIL\t{idx}\t{op}\tunknown op or arity"; return false
+
+def runU256VectorFile (path : String) : IO Bool := do
+  let js ← readJsonFile path >>= Lean.Json.toIoU256Vectors
+  let results ← js.putIndex.mapM processU256Vector
+  let passes := results.count true
+  if passes == results.length then
+    IO.println s!"OK — u256: {passes}/{results.length} PASS"; return true
+  else
+    IO.println s!"RED — u256: {passes}/{results.length} PASS, target not met"; return false
+
 def main : List String → IO Unit
+  | "--u256" :: pathStr :: [] => do
+    if !(← runU256VectorFile pathStr) then IO.Process.exit 1
   | "--vectors" :: addrStr :: pathStr :: [] => do
     let addrStr2 := remove0x addrStr
     let paddedAddrStr := String.mk (List.replicate (40 - addrStr2.length) '0') ++ addrStr2

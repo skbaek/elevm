@@ -67,6 +67,13 @@ PRECOMPILE_FILES=(
 
 EXPECTED_FILES=("${CONTROL_FILES[@]}" "${PRECOMPILE_FILES[@]}")
 
+# The word-operation oracle is deliberately run by check-u256.sh, not through
+# the precompile address dispatch above.  Keep it listed here so this manifest
+# still rejects genuinely stray JSON files while the two gates remain separate.
+AUXILIARY_FILES=(
+  u256.json
+)
+
 # Regenerate compact MSM samples from the pinned full files in
 # scripts/vectors/SOURCES.md:
 #   jq '.[0:32]' msm_G1_bls.json > scripts/vectors/msm_G1_bls.head.json
@@ -106,6 +113,9 @@ is_expected_file() {
   local file="$1"
   local expected
   for expected in "${EXPECTED_FILES[@]}"; do
+    [ "$file" = "$expected" ] && return 0
+  done
+  for expected in "${AUXILIARY_FILES[@]}"; do
     [ "$file" = "$expected" ] && return 0
   done
   return 1
