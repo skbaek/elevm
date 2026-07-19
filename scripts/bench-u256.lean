@@ -19,6 +19,13 @@ the row reads artificially fast — observed swings exceed 10x (e.g. 179 vs
 2471 ns/op on identical binaries, step 3).  Compare exp performance across
 revisions via fixture wall-clocks (`vmPerformance/loopExp.json`), not this
 row.
+
+The `codec` row (step 5) bundles encode and decode: it times
+`B256.toB8L` followed by `B8L.toB256` on a 32-byte list, because the
+decoder needs a fresh byte list per iteration and a hoistable constant
+input would be optimized out of the loop.  `B256.toB8L` is unchanged by
+step 5, so the row's delta across revisions is still attributable to the
+decoder alone; the encode half is a fixed additive offset.
 -/
 
 def sample : B256 :=
@@ -49,3 +56,4 @@ def main : IO Unit := do
   bench "div-2^128" 20000 nonce (fun i x => x / ((1 : Nat).toB256 <<< 128) + sample + i.toB256)
   bench "div-3" 20000 nonce (fun i x => x / 3 + sample + i.toB256)
   bench "exp" 100 nonce (fun i x => B256.bexp x (i + 1).toB256)
+  bench "codec" 200000 nonce (fun i x => (x + i.toB256).toB8L.toB256)

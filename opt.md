@@ -582,6 +582,62 @@ multiplication — this step is the minimal-churn test of that attribution.
 The expensive alternative is named, fenced, and default-rejected in D6;
 if the cheap fix flips the fixture, the fence never gets tested.
 
+### Step-5 outcome and findings carried to Step 7 (recorded 2026-07-20)
+
+Executed. The codec rewrite landed inside the D6 fence and the win is
+real — `codec` bench row 3460 → 394 ns/op (~8.8×, measured before/after on
+the same machine by rebuilding the pre-step tree), and
+`vmPerformance/loopExp.json` 54.11 s → 26.93 s. **`loopMul.json` did not
+flip** (still TIMEOUT at the 100 s cap); baseline unchanged, no rule-6
+edit. Per the step prompt the agent profiled and stopped; the predecode
+cache was not built.
+
+Fresh 8 s sample of the running `loopMul` fixture, ~6,516 elevm samples,
+self time:
+
+| frame | samples | share |
+|---|---:|---:|
+| `lean_dec_ref_cold` + `mi_free` + `mi_malloc_small` | 2,755 | ~42% |
+| `noPushBefore` | 245 | ~3.8% |
+| `List_lengthTR` | 235 | ~3.6% |
+| `exec` | 201 | ~3.1% |
+| `getInst` | 180 | ~2.8% |
+| `B8L_toB256_go` (the rewritten codec) | 36 | ~0.6% |
+
+Four things Step 7 should carry from this:
+
+1. **The plan-time attribution was half right.** The codec was a genuine
+   cost (loopExp is the proof), but it was never loopMul's dominant one.
+   Step 7's harvest must not read the unflipped `loopMul` as a Step-5
+   failure; the step did what it claimed, to a fixture that was bound
+   elsewhere.
+2. **D6's predecode cache is the wrong instrument and should stay
+   rejected.** `getInst` is ~2.8% of self time. The largest identifiable
+   *algorithmic* redundancy is instead `jumpable`/`noPushBefore`
+   (`Execution.lean:2586-2603`), which re-derives a static property of the
+   code on every JUMP via a backward scan that recurses into a nested full
+   `noPushBefore cd k 32`. A jumpdest-validity cache is cheaper than a
+   predecode cache and, unlike it, does not touch `exec` — near-zero blanc
+   exposure. But at ~3.8% self time it cannot flip the fixture alone.
+3. **The real weight is allocation and refcount churn (~42%), spread
+   across the interpreter loop, not concentrated in any hotspot.** This is
+   direct evidence for D8's deferred `List B256` stack/container arc and
+   should revise that arc's priors upward in Step 7's closing report,
+   under either gate verdict.
+4. **Methodological warning for the Step-7(c) gate.** These are self-time
+   numbers: allocation *caused by* an operation is attributed to the
+   allocator, not to the operation. D7's threshold — "ordinary word ops
+   ≥ ~20% of profile" — will systematically under-read if measured the
+   same way, because the allocation those word ops trigger lands in the
+   42% bucket. Measure that share on an inclusive/call-tree basis, and say
+   in the memo which basis was used.
+
+Unmeasured, and worth taking before anyone attempts loopMul again: the
+fixture's **uncapped** wall-clock. Everything above only establishes
+"≥ 100 s". If it is ~110 s, several small wins compound into a flip; if it
+is several hundred, no change in this family reaches it, and the honest
+move is to reclassify rather than optimize.
+
 ---
 
 ## Step 6 — Precompile inner loops: Blake2F, SHA-256 (cuttable)

@@ -1151,11 +1151,33 @@ def B8L.toB128 (xs : B8L) : B128 :=
   let xl := xs'.drop 8
   ⟨B8L.toB64 xh, B8L.toB64 xl⟩
 
-def B8L.toB256 (xs : B8L) : B256 :=
-  let xs' := xs.pack 32
-  let xh := xs'.take 16
-  let xl := xs'.drop 16
-  ⟨B8L.toB128 xh, B8L.toB128 xl⟩
+-- Big-endian byte-list → word, as a single left-to-right pass over the four
+-- 64-bit limbs: each byte is shifted into the low limb and the overflow of
+-- every limb spills into the next. Bytes beyond the 32 most recent ones fall
+-- off the top, so this agrees with the old `pack 32`-then-split codec on both
+-- of its behaviors: left zero-extension of short lists, and truncation to the
+-- last 32 bytes of long ones. No `pack`, `take`, `drop`, or reversal.
+def B8L.toB256.go (l3 l2 l1 l0 : B64) : B8L → B256
+  | [] => ⟨⟨l3, l2⟩, ⟨l1, l0⟩⟩
+  | b :: bs =>
+    go ((l3 <<< 8) ||| (l2 >>> 56))
+       ((l2 <<< 8) ||| (l1 >>> 56))
+       ((l1 <<< 8) ||| (l0 >>> 56))
+       ((l0 <<< 8) ||| b.toB64)
+       bs
+
+def B8L.toB256 (xs : B8L) : B256 := B8L.toB256.go 0 0 0 0 xs
+
+-- Equation lemmas for the codec: leading zero bytes are inert, and the short
+-- concrete case that downstream proofs unfold. These replace the `pack`/`take`/
+-- `drop` reasoning the old definition invited.
+lemma B8L.toB256_zero_cons (xs : B8L) : B8L.toB256 (0 :: xs) = B8L.toB256 xs :=
+  rfl
+
+lemma B8L.toB256_pair (b0 b1 : B8) :
+    B8L.toB256 [b0, b1] = ⟨⟨0, 0⟩, ⟨0, (b0.toB64 <<< 8) ||| b1.toB64⟩⟩ := by
+  simp only [B8L.toB256, B8L.toB256.go, B8.toB64]
+  refine Prod.ext (Prod.ext ?_ ?_) (Prod.ext ?_ ?_) <;> bv_decide
 
 lemma B128.toB128_toB8L (x : B128) : x.toB8L.toB128 = x := by
   simp only [B8L.toB128]
@@ -1170,16 +1192,11 @@ lemma B128.toB128_toB8L (x : B128) : x.toB8L.toB128 = x := by
   simp [B64.toB64_toB8L]
 
 lemma B256.toB256_toB8L (x : B256) : x.toB8L.toB256 = x := by
-  simp only [B8L.toB256]
-  have h_len := B256.length_toB8L x
-  rw [B8L.pack_eq_self h_len]
-  simp only [B256.toB8L]
-  have h_take := @List.take_length_append _ x.1.toB8L x.2.toB8L
-  rw [B128.length_toB8L] at h_take
-  have h_drop := @List.drop_length_append _ x.1.toB8L x.2.toB8L
-  rw [B128.length_toB8L] at h_drop
-  rw [h_take, h_drop]
-  simp [B128.toB128_toB8L]
+  show B8L.toB256.go 0 0 0 0 (B256.toB8L x) = ((x.1.1, x.1.2), (x.2.1, x.2.2))
+  simp only [ B256.toB8L, B128.toB8L, B64.toB8L, B32.toB8L, B16.toB8L,
+              List.cons_append, List.nil_append, B8L.toB256.go,
+              B8.toB64, B16.toB8, B32.toB16, B64.toB32 ]
+  refine Prod.ext (Prod.ext ?_ ?_) (Prod.ext ?_ ?_) <;> bv_decide
 
 def IO.guard (φ : Prop) [Decidable φ] (msg : String) : IO Unit :=
   if φ then return () else IO.throw msg
