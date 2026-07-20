@@ -315,6 +315,24 @@ Phase B with lookup/hash measurements in hand, default cut. The
 kept — permanent load-bearing `abbrev`s have bitten this project before —
 but it rides at the tail, never on the critical path.
 
+**Step-7 amendment (2026-07-20, measured).** The curve-program deferral
+was justified on BLS vector throughput; Step 7(c)'s profiling shows the
+justification had a hole. The identical inefficiency — affine-coordinate
+EC arithmetic paying one `extEuclid` modular inversion per point add/double
+— sits on **secp256k1 `ecrecover`**, which is on the path of *every*
+transaction: it is ~70% inclusive of main-thread time across all four
+ordinary fixture families sampled (`vmArithmeticTest`, `stMemoryTest`,
+`stSStoreTest`, `stCallCodes`), with keccak the second-largest at ~25%.
+A signature recovery is ~380 affine inversions; projective/Jacobian
+coordinates reduce that to one, and Montgomery batching amortizes further —
+the same techniques, largely the same code, as the deferred BLS program.
+The follow-on priority therefore **flips: secp256k1 first, BLS second**,
+with the BLS work mostly falling out of the secp256k1 work. Caveat,
+honestly held: the 70% is inflated by fixture-sized transactions (little
+execution per signature); it is still a first-order cost in any realistic
+workload. The container/byte-layer arcs' priors were separately revised
+upward by Step-5 finding 3 and Step-6 finding 3.
+
 ### D9 — Generated artifacts, never hand-typed
 
 `scripts/vectors/u256.json` comes only from the committed generator;
@@ -808,9 +826,151 @@ representation migration gets built on measured residual need or not at
 all. Either verdict is a success for this plan; only an unmeasured
 verdict is a failure.
 
+### Step-7 outcome: **NO-GO on Phase B** (recorded 2026-07-20)
+
+Executed in full. All gates green, all four protected theorems intact, and
+the pre-registered D7 thresholds are missed by more than an order of
+magnitude on every workload measured — including the two that are genuinely
+interpreter-bound. Phase A stands as the complete banked win; Phase B is
+archived, not attempted.
+
+**(a) Integration.** elevm was already pushed through Step 6, so the D5
+protocol collapsed to a direct pin bump: `lakefile.lean` + `lake-manifest.json`
+to `378240e`. **Exactly the two pre-mapped proofs broke and nothing else** —
+the Step-1(c) exposure map, re-run against the new elevm, held without a
+single unmapped dependency. Repairs, both in `Common.lean`: `List.toB256_pair`
+(:1314) now goes through elevm's pre-staged `B8L.toB256_pair` plus a local
+`B8L.toB64 [a,b]` bridge; `B8L.toB256_sig` (:6772) is a three-line induction
+on `B8L.toB256_zero_cons`. Net −2 lines. `rg` confirms no `mulx`/`divMod`/
+`divOffset` reference survives anywhere in blanc, and `bexp` is still applied
+exactly once, never unfolded.
+
+**(b) Harvest.** Gates: V0 both repos, U256 21513/21513, VEC 42/42 files +
+5/5 controls, SMOKE 175 match baseline (3:39.59), FULL 2983 match baseline
+— 2976 PASS / 5 FAIL / 2 TIMEOUT (41:12.48), BLS 29/29 match baseline
+(7:52.36). The FULL run is the tier-level confirmation Step 6 deferred: its
+`baseline-full.txt` sha flip is now verified at tier scope, not just per-file.
+
+Offenders, Step 1 → Step 7, with per-step attribution:
+
+| fixture | Step 1 | Step 7 | attributed to |
+|---|---:|---:|---|
+| `loopExp` | TIMEOUT (≥100 s) | **PASS 24.16 s** | Step 2 `Nat.powMod` (→54.11 s), Step 5 codec (→26.93 s) |
+| `static_Call50000_sha256` | TIMEOUT (415.98 s uncapped) | **PASS 88.80 s** | Step 6 (4.67×) |
+| `loopMul` | TIMEOUT | TIMEOUT | unmoved by Steps 2/3/5/6 |
+| `CALLBlake2f_MaxRounds` | TIMEOUT | TIMEOUT (763 s uncapped) | Step 6 gave 4.5×; still ~7× over cap |
+
+No TIMEOUT classification was flipped in this step: the two remaining ones
+are genuine, and both baselines already record them.
+
+Bench, `step1` → `step7` (same machine; `exp` excluded — the row's header
+documents why it is not comparable across runs):
+
+| row | step1 | step7 | factor |
+|---|---:|---:|---:|
+| add / and / lt | 138 / 103 / 86 | 145 / 100 / 88 | 1.0× (expected — no representation change) |
+| `div-2^128` | 12 977 | 1 003 | **12.9×** |
+| `div-3` | 35 641 | 971 | **36.7×** |
+| `mul` | 659 | 1 494 | **0.44× — a regression, see finding 4** |
+| `codec` | (3 460, measured at Step 5) | 359 | ~9× |
+
+**(c) The gate.** Basis: **inclusive call-tree** share, top-most occurrence
+only, so allocation *caused by* an op is attributed to the op and not to the
+allocator — the correction Step-5 finding 4 demanded. Main-thread samples
+only (macOS `sample`, 25 s each). Word ops = `B256` add/sub/neg/compare/
+bitwise/shift; the symbols exist in the binary (`nm` confirms `l_B256_add`
+et al. are emitted and resolvable), so a zero is a real zero, not a naming
+artifact.
+
+| fixture family | samples | `exec` incl. | **word ops incl.** | ecrecover incl. | keccak incl. |
+|---|---:|---:|---:|---:|---:|
+| `vmArithmeticTest` | 15 665 | 0.2% | **0.0%** | 67.5% | 29.2% |
+| `stMemoryTest` | 21 001 | 0.3% | **0.0%** | 70.0% | 26.3% |
+| `stSStoreTest` | 21 113 | 0.2% | **0.0%** | 71.9% | 25.2% |
+| `stCallCodes` | 6 060 | 0.3% | **0.0%** | 69.6% | 25.2% |
+| `stQuadraticComplexityTest` | 21 170 | 97.0% | **0.0%** | 1.9% | 1.0% |
+| `loopMul` (opcode-bound reference) | 21 070 | 100% | **1.1%** | 0% | 0% |
+
+D7 required word ops ≥ ~20% of representative non-pathological profiles.
+Measured: **0.0%** in five families and **1.1%** in the one workload that is
+100% interpreter. The second threshold (flat limbs projecting ≥10–15%
+end-to-end) cannot be reached either — the measured ~9× limb-op win applied
+to a 1.1% inclusive share projects **≤1%** end-to-end, and to a 0.0% share
+projects nothing. The verdict is not marginal; it is off by ~20×. **NO-GO.**
+
+Anticipated objection, answered honestly: the first four families are
+dominated by transaction admission (ecrecover + keccak ≈ 95%), so one could
+argue they under-represent opcode execution. That is exactly why
+`stQuadraticComplexityTest` (97% `exec`) and `loopMul` (100% `exec`) are in
+the table — and they do not rescue the hypothesis. Where the interpreter
+*is* the whole workload, word ops are still ~1%.
+
+**Seven findings carried out of the plan.**
+
+1. **The largest cost in ordinary workloads is secp256k1 signature
+   recovery, ~70% inclusive** — `extEuclid` (modular inversion by extended
+   Euclid), `FinField.inv`/`div`, and affine `EllipticCurve.add`/`double`
+   under `secp256k1_recover`. D8 deferred the *BLS* curve program on
+   vector-throughput grounds; this measurement shows the **same fix family
+   (projective/Jacobian coordinates, batched inversion) sits on the ordinary
+   transaction path**, not just the BLS one. This should be the next plan,
+   and it is a much larger prize than anything Phase B offered.
+2. **Keccak is ~25% inclusive in ordinary families** — second-largest, and
+   untouched by this arc.
+3. **`loopMul` is 389.83 s uncapped and PASSES** (measured this step with
+   `ELEVM_TIMEOUT=1200`; the plan flagged this number as the missing
+   datum). At 3.9× over the 100 s cap, the plan's own test applies: "if it
+   is several hundred, no change in this family reaches it, and the honest
+   move is to reclassify rather than optimize." It is a correctness-clean,
+   performance-classified file, exactly like `CALLBlake2f_MaxRounds` at
+   763 s. Both want a sanctioned permanent-TIMEOUT annotation or a per-file
+   timeout override — a user decision, not an agent's.
+4. **Step 3's `Nat`-routed `mul` is a measured ~2.3× regression** (659 →
+   1 494 ns/op, stable across five runs, the step-change landing exactly at
+   Step 3). The plan predicted a 2–4× *win* and registered the conversion
+   caveat; the caveat won. It costs nothing observable — no fixture is
+   mul-bound (`loopMul` is allocation-bound) — and reverting it would
+   re-open the theorem ABI that made Step 4 net-negative, since blanc now
+   consumes upstream `B256.toNat_mul`. Recommendation: keep, recorded. Note
+   this is also the cleanest possible evidence *for* the flat
+   representation (cheap `toNat` would make the routing free) and it still
+   does not move the gate, because the op is ~0% of profile.
+5. **Axiom regression, rule 4.** The four protected theorems now carry
+   `Lean.ofReduceBool` + `Lean.trustCompiler`. Source: **Step 5's
+   `B256.toB256_toB8L`**, reproved with `bv_decide`, whose LRAT certificate
+   reflects through `ofReduceBool`; blanc consumes it at `Common.lean:6903`.
+   At the old pin neither repo used `bv_decide` anywhere. Rule 4 forbids
+   adding `ofReduce*`, so this is a Step-5 violation that only became
+   visible at this integration. Undoing it means re-proving that lemma
+   without `bv_decide` in elevm, re-pushing, re-pinning. Flagged, not
+   silently accepted. *[Post-commit correction: blanc already carries a CI
+   axiom guard (`scripts/check.sh` + `scripts/AxiomCheck.lean`, forbidding
+   `sorryAx|ofReduceBool|ofReduceNat` on the four protected theorems) — so
+   blanc CI is **red** at the Step-7 commit until the axioms are removed.
+   The repair plan is `~/nodecide.md`.]*
+6. **Allocation and Lean-runtime overhead own the interpreter loop.**
+   `loopMul` self time: allocator/refcount ~38%, `_tlv_get_addr` 14.8% and
+   `lean_inc_heartbeat` 6.5% (Lean runtime, not elevm code), `noPushBefore`
+   3.5%, `List.lengthTR` 3.2%, `exec` 2.8%. This confirms and sharpens
+   Step-5 finding 3: D8's deferred container/`List B256` arc and Step-6
+   finding 3's byte/`ByteArray` arc are where interpreter time actually is.
+7. **Bookkeeping gap, stated rather than papered over.** Step 1's tier
+   wall-clock totals were never persisted to a committed artifact, so the
+   before/after tier comparison the plan asked for cannot be produced. The
+   Step-7 totals above are recorded as the baseline from here.
+
+**Closure.** Phase A delivered: two of four timeouts flipped, div ~13–37×,
+codec ~9×, ~320 downstream proof lines deleted against ~5 added, four
+theorems intact, no type changed. The follow-on plans, in the priority this
+arc's profiles establish: **(i) the elliptic-curve program — secp256k1
+first, BLS second, same techniques**; (ii) the byte/`ByteArray` layer;
+(iii) containers and the interpreter's allocation profile; (iv) the 5 FAIL
+correctness files. Phase B's design assets are archived below unchanged,
+for a future in which the measured conditions differ.
+
 ---
 
-# Phase B — conditional on Step 7's gate
+# Phase B — archived, not entered (Step 7 gate: NO-GO)
 
 The retired plan's Steps 2–8, restructured to remove its verified defects
 (import cycle, model-in-runtime `toNat`, missing order/hash inventories,
