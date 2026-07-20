@@ -5,6 +5,7 @@ import Mathlib.Data.Nat.Basic
 import Mathlib.Data.List.Lemmas
 import Mathlib.Data.List.TakeDrop
 import Mathlib.Data.UInt
+import Mathlib.Tactic.IntervalCases
 -- import Mathlib.Util.Notation3
 -- import Mathlib.Data.Vector.Basic
 
@@ -1179,6 +1180,82 @@ lemma B8L.toB256_pair (b0 b1 : B8) :
   simp only [B8L.toB256, B8L.toB256.go, B8.toB64]
   refine Prod.ext (Prod.ext ?_ ?_) (Prod.ext ?_ ?_) <;> bv_decide
 
+@[simp] lemma B8.toB16_getElem_toBitVec (b : B8) (i : Nat) (hi : i < 16) :
+    b.toB16.toBitVec[i]'hi =
+      if i < 8 then b.toBitVec.getLsbD i else false := by
+  cases b with
+  | ofBitVec v =>
+    by_cases h : i < 8
+    · simp [B8.toB16, h]
+    · simp [B8.toB16, h, BitVec.getLsbD_of_ge v i (by omega)]
+
+@[simp] lemma B8.toB64_getElem_toBitVec (b : B8) (i : Nat) (hi : i < 64) :
+    b.toB64.toBitVec[i]'hi =
+      if i < 8 then b.toBitVec.getLsbD i else false := by
+  cases b with
+  | ofBitVec v =>
+    by_cases h : i < 8
+    · simp [B8.toB64, h]
+    · simp [B8.toB64, h, BitVec.getLsbD_of_ge v i (by omega)]
+
+@[simp] lemma B16.toB32_getElem_toBitVec (b : B16) (i : Nat) (hi : i < 32) :
+    b.toB32.toBitVec[i]'hi =
+      if i < 16 then b.toBitVec.getLsbD i else false := by
+  cases b with
+  | ofBitVec v =>
+    by_cases h : i < 16
+    · simp [B16.toB32, h]
+    · simp [B16.toB32, h, BitVec.getLsbD_of_ge v i (by omega)]
+
+@[simp] lemma B32.toB64_getElem_toBitVec (b : B32) (i : Nat) (hi : i < 64) :
+    b.toB64.toBitVec[i]'hi =
+      if i < 32 then b.toBitVec.getLsbD i else false := by
+  cases b with
+  | ofBitVec v =>
+    by_cases h : i < 32
+    · simp [B32.toB64, h]
+    · simp [B32.toB64, h, BitVec.getLsbD_of_ge v i (by omega)]
+
+-- The explicit 64 bit case split needs a larger elaboration budget, but the
+-- resulting proof term uses only ordinary bit-vector extensionality.
+set_option maxHeartbeats 1000000 in
+lemma B8s.toB64_eq_toB64 (a b c d e f g h : B8) :
+    B8s.toB64 a b c d e f g h = B8L.toB64 [a, b, c, d, e, f, g, h] := by
+  apply UInt64.toBitVec_injective
+  apply BitVec.eq_of_getLsbD_eq
+  intro i hi
+  interval_cases i <;>
+    simp [B8s.toB64, B8L.toB64, B8L.toB32, B8L.toB16, B8L.pack, List.ekatD]
+
+set_option maxHeartbeats 1000000 in
+lemma B8L.toB256_go_eight (l3 l2 l1 l0 : B64) (a b c d e f g h : B8) :
+    B8L.toB256.go l3 l2 l1 l0 [a, b, c, d, e, f, g, h] =
+      ⟨⟨l2, l1⟩, ⟨l0, B8s.toB64 a b c d e f g h⟩⟩ := by
+  simp only [B8L.toB256.go]
+  refine Prod.ext (Prod.ext ?_ ?_) (Prod.ext ?_ ?_)
+  all_goals apply UInt64.toBitVec_injective
+  all_goals apply BitVec.eq_of_getLsbD_eq
+  all_goals intro i hi
+  all_goals interval_cases i <;> simp [B8s.toB64]
+
+lemma B8L.toB256_go_eight_cons (l3 l2 l1 l0 : B64) (a b c d e f g h : B8)
+    (tail : B8L) :
+    B8L.toB256.go l3 l2 l1 l0 (a :: b :: c :: d :: e :: f :: g :: h :: tail) =
+      B8L.toB256.go l2 l1 l0 (B8s.toB64 a b c d e f g h) tail := by
+  have hs := B8L.toB256_go_eight l3 l2 l1 l0 a b c d e f g h
+  simp only [B8L.toB256.go] at hs ⊢
+  rcases Prod.mk.inj hs with ⟨hhi, hlo⟩
+  rcases Prod.mk.inj hhi with ⟨h3, h2⟩
+  rcases Prod.mk.inj hlo with ⟨h1, h0⟩
+  rw [h3, h2, h1, h0]
+
+lemma B8L.toB256_go_append_toB8L (l3 l2 l1 l0 y : B64) (tail : B8L) :
+    B8L.toB256.go l3 l2 l1 l0 (y.toB8L ++ tail) =
+      B8L.toB256.go l2 l1 l0 y tail := by
+  simp only [B64.toB8L, B32.toB8L, B16.toB8L, List.cons_append, List.nil_append]
+  rw [B8L.toB256_go_eight_cons, B8s.toB64_eq_toB64]
+  exact congrArg (fun z => B8L.toB256.go l2 l1 l0 z tail) (B64.toB64_toB8L y)
+
 lemma B128.toB128_toB8L (x : B128) : x.toB8L.toB128 = x := by
   simp only [B8L.toB128]
   have h_len := B128.length_toB8L x
@@ -1193,10 +1270,12 @@ lemma B128.toB128_toB8L (x : B128) : x.toB8L.toB128 = x := by
 
 lemma B256.toB256_toB8L (x : B256) : x.toB8L.toB256 = x := by
   show B8L.toB256.go 0 0 0 0 (B256.toB8L x) = ((x.1.1, x.1.2), (x.2.1, x.2.2))
-  simp only [ B256.toB8L, B128.toB8L, B64.toB8L, B32.toB8L, B16.toB8L,
-              List.cons_append, List.nil_append, B8L.toB256.go,
-              B8.toB64, B16.toB8, B32.toB16, B64.toB32 ]
-  refine Prod.ext (Prod.ext ?_ ?_) (Prod.ext ?_ ?_) <;> bv_decide
+  simp only [B256.toB8L, B128.toB8L, List.append_assoc]
+  rw [B8L.toB256_go_append_toB8L, B8L.toB256_go_append_toB8L,
+      B8L.toB256_go_append_toB8L]
+  rw [show x.2.2.toB8L = x.2.2.toB8L ++ [] by simp]
+  rw [B8L.toB256_go_append_toB8L]
+  rfl
 
 def IO.guard (φ : Prop) [Decidable φ] (msg : String) : IO Unit :=
   if φ then return () else IO.throw msg
