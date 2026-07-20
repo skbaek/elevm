@@ -14,7 +14,7 @@
 #                 point-evaluation precompiles (scripts/bls-tests.txt) against
 #                 the committed hand-authored target baseline
 #                 scripts/baseline-bls.txt (precomps.md Step 9); the fixture
-#                 root and per-file timeout defaults differ — see Environment
+#                 root differs — see Environment
 #   --dir <path>  run one .json fixture, or every .json fixture under a
 #                 directory (the path must be inside the fixture root); ad hoc
 #                 — if no baseline-dir.txt exists, the gate passes iff every
@@ -27,32 +27,48 @@
 #
 # --patch and --rlp4 are target gates, not baseline-comparison tiers: each
 # succeeds if and only if every listed file is PASS. They have no baseline and
-# never rebase. Their reports additionally record per-file elapsed wall time.
-# Ad-hoc --dir reports also record elapsed time for performance measurements.
+# never rebase.
 #
 # --bls compares against a committed baseline like the ordinary tiers, but the
 # baseline is a hand-authored target (all PASS unless an entry carries a
 # written justification), so --rebase is rejected; edit baseline-bls.txt
 # directly instead. `#` comment lines in it document exclusions and
-# justifications. Like the target gates, its report records wall times.
+# justifications.
 #
 # Environment:
 #   ELEVM_FIXTURES  fixture root (default:
 #                   ~/execution-specs/tests/fixtures/ethereum_tests/BlockchainTests;
 #                   for --bls: ~/eest-fixtures/fixtures/blockchain_tests, the
 #                   pinned EEST release snapshot — see scripts/vectors/SOURCES.md)
-#   ELEVM_TIMEOUT   per-file timeout in seconds (default: 100; for --bls: 1200,
-#                   sized for the EEST stress files — 46 MB test_valid.json and
-#                   the 122-case KZG external-vector file)
+#   ELEVM_TIMEOUT   per-file wall-clock GUARD in seconds (default: 1800). Not a
+#                   classifier — see below.
 #
-# A failing test makes elevm throw and abort the whole invocation, so each
-# fixture file runs in its own process, under a perl-alarm timeout (macOS has
-# no coreutils timeout). Per-file classification PASS / FAIL / TIMEOUT is
-# written to scripts/report-<tier>.txt (gitignored). The gate passes iff every
-# file's classification equals the committed scripts/baseline-<tier>.txt —
-# NOT iff every file passes. A PASS/FAIL change is a functional regression.
-# A change involving TIMEOUT is environment/performance-sensitive, so it is
-# reported separately as REVIEW rather than asserted to be a regression.
+# Classification contract
+# -----------------------
+# Every fixture file must run to completion, and the only classifications are
+# PASS and FAIL. Correctness is the sole pass/fail axis; wall time is never
+# one. A failing test makes elevm throw and abort the whole invocation, so
+# each fixture file runs in its own process.
+#
+# That process runs under a per-file wall-clock GUARD (a perl alarm; macOS has
+# no coreutils timeout). The guard is not a classification: it is a
+# "this should never fire" hang detector. The slowest fixture in the corpus
+# runs ~763 s, so the 1800 s default has better than 2x headroom. If the guard
+# ever trips, the run prints a HARNESS ERROR, aborts the tier immediately, and
+# exits nonzero — no classification is recorded for that file, and no report
+# or baseline can absorb the event.
+#
+# Per-file lines are `STATUS<TAB>TIME<TAB>path` in both the report
+# (scripts/report-<tier>.txt, gitignored) and the committed baseline
+# (scripts/baseline-<tier>.txt). The gate compares the STATUS column only; the
+# TIME column is informational reference data recorded on the machine that ran
+# --rebase (stated in each baseline's header) and never gate input. A run
+# whose per-file time exceeds 2x its baseline reference prints a DRIFT note —
+# informational, never a verdict.
+#
+# The gate passes iff every file's classification equals the committed
+# baseline's — NOT iff every file passes. Any classification change is a
+# regression.
 #
 # CLI contract: exit 0 if and only if the gate passes; the last line of
 # output is a single unambiguous verdict line.
@@ -95,17 +111,15 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$TIER" ] || usage
 
-# Tier-dependent defaults: the bls tier runs the pinned EEST release snapshot,
-# which lives outside the default fixture root, and its stress files (46 MB
-# test_valid.json at ~265-285 s, the 122-case KZG external-vector file at
-# ~109 s) need a larger per-file timeout than the legacy tiers' 100 s.
+# The bls tier runs the pinned EEST release snapshot, which lives outside the
+# default fixture root. The wall-clock guard is uniform across tiers: it is a
+# hang detector, not a per-tier performance budget.
 if [ "$TIER" = "bls" ]; then
   FIXTURES="${ELEVM_FIXTURES:-$HOME/eest-fixtures/fixtures/blockchain_tests}"
-  TIMEOUT="${ELEVM_TIMEOUT:-1200}"
 else
   FIXTURES="${ELEVM_FIXTURES:-$HOME/execution-specs/tests/fixtures/ethereum_tests/BlockchainTests}"
-  TIMEOUT="${ELEVM_TIMEOUT:-100}"
 fi
+GUARD="${ELEVM_TIMEOUT:-1800}"
 
 # Target-gate tiers succeed iff every listed file is PASS; they have no
 # baseline and never rebase.
@@ -201,43 +215,57 @@ mkdir -p "$(dirname "$REPORT")"
 
 NPASS=0
 NFAIL=0
-NTIMEOUT=0
 I=0
 while IFS= read -r REL; do
   [ -n "$REL" ] || continue
   I=$((I + 1))
   START="$(perl -MTime::HiRes=time -e 'printf "%.3f", time')"
-  # alarm(2) persists across exec: when the timeout fires, SIGALRM kills the
-  # exec'd elevm (exit status 128 + 14 = 142).
-  perl -e 'alarm shift @ARGV; exec @ARGV' "$TIMEOUT" "$BIN" "$FIXTURES/$REL" \
-    --network Prague \
+  # Guard runner (macOS has no coreutils timeout): fork elevm, alarm the
+  # parent, SIGKILL the child on trip and exit 142 *normally* — exiting rather
+  # than dying by SIGALRM keeps bash's "Alarm clock" job-control notice off
+  # this script's stderr, so a guard trip is announced only by the HARNESS
+  # ERROR path below. A child killed by the guard reports 128+9 = 137, so it
+  # can never be confused with the 142 the guard itself returns.
+  perl -e '
+    my $t = shift @ARGV;
+    my $pid = fork();
+    die "fork failed: $!" unless defined $pid;
+    if (!$pid) { exec @ARGV; exit 127 }
+    $SIG{ALRM} = sub { kill "KILL", $pid; waitpid($pid, 0); exit 142 };
+    alarm $t;
+    waitpid($pid, 0);
+    alarm 0;
+    my $st = $?;
+    exit($st & 127 ? 128 + ($st & 127) : $st >> 8);
+  ' "$GUARD" "$BIN" "$FIXTURES/$REL" --network Prague \
     > /dev/null 2>&1
   RC=$?
   ELAPSED="$(perl -e 'printf "%.2f", $ARGV[1] - $ARGV[0]' \
     "$START" "$(perl -MTime::HiRes=time -e 'printf "%.3f", time')")"
+  if [ "$RC" -eq 142 ]; then
+    # The guard is a hang detector, never a classification. Nothing is written
+    # to the report for this file and the tier stops here.
+    printf 'HARNESS ERROR — %s exceeded the %ss guard; no fixture legitimately runs this long — investigate before rerunning\n' \
+      "$REL" "$GUARD" >&2
+    echo "HARNESS ERROR — $TIER: wall-clock guard tripped on $REL after ${ELAPSED}s (guard ${GUARD}s); tier aborted at file $I/$TOTAL, no classification recorded; partial report: $REPORT"
+    exit 1
+  fi
   if [ "$RC" -eq 0 ]; then
     CLS=PASS; NPASS=$((NPASS + 1))
-  elif [ "$RC" -eq 142 ]; then
-    CLS=TIMEOUT; NTIMEOUT=$((NTIMEOUT + 1))
   else
     CLS=FAIL; NFAIL=$((NFAIL + 1))
   fi
-  if [ "$IS_TARGET" -eq 1 ] || [ "$TIER" = "bls" ] || [ "$TIER" = "dir" ]; then
-    printf '%s\t%ss\t%s\n' "$CLS" "$ELAPSED" "$REL" >> "$REPORT"
-    printf '[%d/%d] %s %ss %s\n' "$I" "$TOTAL" "$CLS" "$ELAPSED" "$REL" >&2
-  else
-    printf '%s\t%s\n' "$CLS" "$REL" >> "$REPORT"
-    printf '[%d/%d] %s %s\n' "$I" "$TOTAL" "$CLS" "$REL" >&2
-  fi
+  printf '%s\t%ss\t%s\n' "$CLS" "$ELAPSED" "$REL" >> "$REPORT"
+  printf '[%d/%d] %s %ss %s\n' "$I" "$TOTAL" "$CLS" "$ELAPSED" "$REL" >&2
 done <<EOF
 $FILES
 EOF
 
-SUMMARY="$NPASS PASS, $NFAIL FAIL, $NTIMEOUT TIMEOUT"
+SUMMARY="$NPASS PASS, $NFAIL FAIL"
 
 # Target gates: fixed all-PASS end condition, no baseline, no rebase.
 if [ "$IS_TARGET" -eq 1 ]; then
-  if [ "$NFAIL" -eq 0 ] && [ "$NTIMEOUT" -eq 0 ]; then
+  if [ "$NFAIL" -eq 0 ]; then
     echo "OK — $TIER: $NPASS/$TOTAL PASS ($SUMMARY)"
     exit 0
   fi
@@ -246,97 +274,81 @@ if [ "$IS_TARGET" -eq 1 ]; then
 fi
 
 if [ "$REBASE" -eq 1 ]; then
-  if [ "$TIER" = "dir" ]; then
-    cut -f1,3 "$REPORT" > "$BASELINE"
-  else
-    cp "$REPORT" "$BASELINE"
-  fi
+  # STATUS and TIME are regenerated together; the times become this machine's
+  # reference data.
+  cp "$REPORT" "$BASELINE"
   echo "OK — $TIER: baseline rebased with $TOTAL files ($SUMMARY)"
   exit 0
 fi
 
-# The bls baseline is hand-authored (`#` comments carry exclusions and
-# justifications) and the bls report carries an elapsed column; normalize
-# both into the plain CLS<TAB>REL shape for the generic comparison below.
-CMP_BASELINE="$BASELINE"
-CMP_REPORT="$REPORT"
-if [ "$TIER" = "bls" ]; then
-  if [ ! -f "$BASELINE" ]; then
-    echo "REGRESSION — bls: no target baseline at $BASELINE (it is committed and hand-maintained, never rebased)"
-    exit 1
-  fi
-  CMP_DIR="$(mktemp -d)"
-  grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$BASELINE" > "$CMP_DIR/baseline"
-  cut -f1,3 "$REPORT" > "$CMP_DIR/report"
-  CMP_BASELINE="$CMP_DIR/baseline"
-  CMP_REPORT="$CMP_DIR/report"
-elif [ "$TIER" = "dir" ]; then
-  CMP_DIR="$(mktemp -d)"
-  cut -f1,3 "$REPORT" > "$CMP_DIR/report"
-  CMP_REPORT="$CMP_DIR/report"
-fi
-
 if [ ! -f "$BASELINE" ]; then
   if [ "$TIER" = "dir" ]; then
-    if [ "$NFAIL" -eq 0 ] && [ "$NTIMEOUT" -eq 0 ]; then
+    if [ "$NFAIL" -eq 0 ]; then
       echo "OK — dir: $TOTAL files, all PASS, no baseline ($SUMMARY)"
       exit 0
     fi
-    echo "REGRESSION — dir: $NFAIL FAIL / $NTIMEOUT TIMEOUT with no baseline; see $REPORT"
+    echo "REGRESSION — dir: $NFAIL FAIL with no baseline; see $REPORT"
+    exit 1
+  fi
+  if [ "$TIER" = "bls" ]; then
+    echo "REGRESSION — bls: no target baseline at $BASELINE (it is committed and hand-maintained, never rebased)"
     exit 1
   fi
   echo "REGRESSION — $TIER: no baseline at $BASELINE (run once with --rebase)"
   exit 1
 fi
 
+# Baselines are STATUS<TAB>TIME<TAB>path, plus (in the hand-authored bls
+# baseline) `#` comment lines carrying exclusions and justifications. Strip
+# comments, then reject anything that is not a well-formed timed line rather
+# than letting a stale two-column baseline compare as a truncated field.
+CMP_DIR="$(mktemp -d)"
+grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$BASELINE" > "$CMP_DIR/baseline-raw"
+MALFORMED="$(awk -F'\t' 'NF != 3 { print FILENAME ":" FNR ": " $0 }' "$CMP_DIR/baseline-raw")"
+if [ -n "$MALFORMED" ]; then
+  printf '%s\n' "$MALFORMED" >&2
+  if [ "$TIER" = "bls" ]; then
+    HINT="it is hand-maintained, never rebased — add the missing TIME column by hand"
+  else
+    HINT="regenerate it with --rebase"
+  fi
+  echo "REGRESSION — $TIER: $BASELINE is not in STATUS<TAB>TIME<TAB>path form ($HINT)"
+  exit 1
+fi
+
+# The gate compares STATUS only; TIME is reference data, never gate input.
+cut -f1,3 "$CMP_DIR/baseline-raw" > "$CMP_DIR/baseline"
+cut -f1,3 "$REPORT" > "$CMP_DIR/report"
+
+# Informational: a file taking more than 2x its baseline reference time. Never
+# a verdict — the reference times come from whatever machine last rebased.
+awk -F'\t' '
+  function secs(v) { sub(/s$/, "", v); return v + 0 }
+  NR == FNR { bt[$3] = secs($2); next }
+  ($3 in bt) && bt[$3] >= 1.0 && secs($2) > 2 * bt[$3] {
+    printf "DRIFT — %s: %ss vs %.2fs baseline reference (%.1fx); informational only\n", \
+      $3, secs($2), bt[$3], secs($2) / bt[$3]
+  }
+' "$CMP_DIR/baseline-raw" "$REPORT"
+
 CHANGES="$(awk -F'\t' '
   NR == FNR { base[$2] = $1; next }
   {
     old = ($2 in base) ? base[$2] : "MISSING"
-    if (old != $1) {
-      kind = (old == "TIMEOUT" || $1 == "TIMEOUT") ? "TIMEOUT" : "FUNCTIONAL"
-      print kind "\t" old "\t" $1 "\t" $2
-    }
+    if (old != $1) print old "\t" $1 "\t" $2
     delete base[$2]
   }
-  END {
-    for (file in base) {
-      kind = (base[file] == "TIMEOUT") ? "TIMEOUT" : "FUNCTIONAL"
-      print kind "\t" base[file] "\tMISSING\t" file
-    }
-  }
-' "$CMP_BASELINE" "$CMP_REPORT")"
+  END { for (file in base) print base[file] "\tMISSING\t" file }
+' "$CMP_DIR/baseline" "$CMP_DIR/report")"
 
 if [ -z "$CHANGES" ]; then
-  NCHANGED=0
-  NFUNCTIONAL=0
-  NTIMEOUT_CHANGED=0
-else
-  NCHANGED="$(printf '%s\n' "$CHANGES" | grep -c .)"
-  NFUNCTIONAL="$(printf '%s\n' "$CHANGES" | grep -c '^FUNCTIONAL')"
-  NTIMEOUT_CHANGED="$(printf '%s\n' "$CHANGES" | grep -c '^TIMEOUT')"
-
-  printf '%s\n' "$CHANGES" | while IFS="$(printf '\t')" read -r KIND OLD NEW REL; do
-    if [ "$KIND" = "TIMEOUT" ]; then
-      printf 'REVIEW — %s: %s -> %s (timeout-sensitive; may reflect machine load or performance)\n' \
-        "$REL" "$OLD" "$NEW"
-    else
-      printf 'CHANGE — %s: %s -> %s\n' "$REL" "$OLD" "$NEW"
-    fi
-  done
-fi
-
-if [ "$NCHANGED" -eq 0 ]; then
   echo "OK — $TIER: $TOTAL files match baseline ($SUMMARY)"
   exit 0
 fi
-if [ "$NFUNCTIONAL" -gt 0 ]; then
-  if [ "$NTIMEOUT_CHANGED" -gt 0 ]; then
-    echo "REGRESSION — $NFUNCTIONAL functional classification changes; additionally $NTIMEOUT_CHANGED timeout-sensitive changes need review; see $REPORT"
-  else
-    echo "REGRESSION — $NFUNCTIONAL functional classification changes vs baseline; see $REPORT"
-  fi
-  exit 1
-fi
-echo "REVIEW — $NTIMEOUT_CHANGED timeout-sensitive classification changes; not definitive regressions, inspect machine load/performance and $REPORT"
+
+NCHANGED="$(printf '%s\n' "$CHANGES" | grep -c .)"
+printf '%s\n' "$CHANGES" | while IFS="$(printf '\t')" read -r OLD NEW REL; do
+  printf 'CHANGE — %s: %s -> %s\n' "$REL" "$OLD" "$NEW"
+done
+echo "REGRESSION — $NCHANGED classification changes vs baseline; see $REPORT"
 exit 1

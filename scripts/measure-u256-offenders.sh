@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Record the four Step-1/Step-7 U256-plan offender measurements without
-# overwriting an earlier run.  A TIMEOUT is measurement data here, not a
-# wrapper failure; check.sh's classification is preserved in each report.
+# overwriting an earlier run.  The opt.md arc this served is closed, but the
+# script remains a working instrument for timing these files.
+#
+# Each report line is check.sh's PASS/FAIL classification plus the wall time,
+# which is the measurement of interest here; every offender runs to completion
+# under the uniform wall-clock guard, so a guard trip is not measurement data
+# but a harness error — check.sh aborts and exits nonzero, and this script
+# propagates that rather than recording anything.
 
 set -uo pipefail
 
@@ -44,13 +50,25 @@ run_measurement() {
   fi
 
   echo "--- Measuring $name ---"
-  "$SCRIPT_DIR/check.sh" "${args[@]}"
-  local rc=$?
+  local out rc verdict
+  # `local out=$(...)` would mask the exit status, so declare first.
+  out="$("$SCRIPT_DIR/check.sh" "${args[@]}")"
+  rc=$?
+  printf '%s\n' "$out"
+  verdict="$(printf '%s\n' "$out" | tail -1)"
+  # A guard trip aborts the tier mid-list, so a partially written report is
+  # not evidence of a completed measurement: fail loudly instead.
+  case "$verdict" in
+    "HARNESS ERROR"*)
+      echo "RED — $name: harness error, measurement discarded — $verdict" >&2
+      return 1
+      ;;
+  esac
   if [ ! -s "$report" ]; then
     echo "RED — measurement did not produce $report" >&2
     return "$rc"
   fi
-  echo "RECORDED — $report (check.sh exit $rc; TIMEOUT/FAIL classifications are retained for review)"
+  echo "RECORDED — $report (check.sh exit $rc; PASS/FAIL classifications and wall times are retained for review)"
   return 0
 }
 
