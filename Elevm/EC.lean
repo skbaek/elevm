@@ -404,18 +404,199 @@ instance {F} [Zero F] [DecidableEq F] [HAdd F F F] [HSub F F F]
   HAdd (EllipticCurve F a b) (EllipticCurve F a b) (EllipticCurve F a b) :=
   ⟨EllipticCurve.add⟩
 
-def EllipticCurve.mulBy {F} [Zero F] [DecidableEq F]
+private def EllipticCurve.affineMulBy {F} [Zero F] [DecidableEq F]
   [HAdd F F F] [HSub F F F] [HMul F F F] [HDiv F F F]
   [HPow F Nat F] [OfNat F 3] [OfNat F 2]
   [ToString F]
   {a b} (p : EllipticCurve F a b) : Nat → EllipticCurve F a b
   | 0 => ⟨0, 0⟩
   | n@(_ + 1) =>
-    let half := EllipticCurve.mulBy p (n / 2)
+    let half := EllipticCurve.affineMulBy p (n / 2)
     let whole := half + half
     if (n % 2) = 0
     then whole
     else whole + p
+
+/-!
+## Internal Jacobian coordinates for `a = 0` scalar multiplication
+
+`JacobianPoint F` represents the affine point `(X/Z², Y/Z³)`.  Every triple
+with `Z = 0` is recognized as infinity and `infinity = (0,0,0)` is the
+canonical representative.  `(0,0,0)` is used rather than the conventional
+`(0,1,0)` so the public `mulBy` wrapper retains its existing typeclass
+constraints; all formulas below branch on `Z = 0` before using coordinates.
+
+The doubling, full-addition, and mixed-addition formulas are respectively
+`dbl-2009-l`, `add-2007-bl`, and `madd-2007-bl` from the Explicit-Formulas
+Database:
+https://www.hyperelliptic.org/EFD/g1p/auto-shortw-jacobian-0.html
+
+These formulas are not complete.  The helpers therefore handle infinity,
+equal points, inverse points, and `Y = 0` explicitly.  In particular, internal
+doubling of `Y = 0` returns canonical infinity; the public wrapper separately
+preserves the historical affine behavior for that degenerate input.
+-/
+
+structure EllipticCurve.JacobianPoint (F : Type) where
+  x : F
+  y : F
+  z : F
+deriving DecidableEq
+
+namespace EllipticCurve.Jacobian
+
+abbrev Point (F : Type) := EllipticCurve.JacobianPoint F
+
+def infinity {F} [Zero F] : Point F := ⟨0, 0, 0⟩
+
+def isInfinity {F} [Zero F] [DecidableEq F] (p : Point F) : Bool :=
+  decide (p.z = 0)
+
+def canonicalize {F} [Zero F] [DecidableEq F] (p : Point F) : Point F :=
+  if isInfinity p then infinity else p
+
+def ofAffine {F} [Zero F] [DecidableEq F] [HSub F F F]
+    [OfNat F 3] [OfNat F 2] {a b} (p : EllipticCurve F a b) : Point F :=
+  if p.x = 0 ∧ p.y = 0 then infinity else ⟨p.x, p.y, 3 - 2⟩
+
+/-- Normalize once, using the single field division in `zInv`. -/
+def toAffine {F} [Zero F] [DecidableEq F] [HSub F F F] [HMul F F F]
+    [HDiv F F F] [OfNat F 3] [OfNat F 2]
+    {a b} (p : Point F) : EllipticCurve F a b :=
+  if isInfinity p then
+    ⟨0, 0⟩
+  else
+    let zInv : F := (3 - 2) / p.z
+    let zInv2 := zInv * zInv
+    ⟨p.x * zInv2, (p.y * zInv2) * zInv⟩
+
+/-- EFD `dbl-2009-l`, with explicit canonical infinity branches. -/
+def double {F} [Zero F] [DecidableEq F]
+    [HAdd F F F] [HSub F F F] [HMul F F F] [OfNat F 3]
+    (p : Point F) : Point F :=
+  if isInfinity p || decide (p.y = 0) then
+    infinity
+  else
+    let a := p.x * p.x
+    let b := p.y * p.y
+    let c := b * b
+    let xPlusB := p.x + b
+    let xPlusBSq := xPlusB * xPlusB
+    let d0 := xPlusBSq - a - c
+    let d := d0 + d0
+    let e := 3 * a
+    let f := e * e
+    let x3 := f - d - d
+    let c2 := c + c
+    let c4 := c2 + c2
+    let c8 := c4 + c4
+    let y3 := e * (d - x3) - c8
+    let z3 := (p.y + p.y) * p.z
+    ⟨x3, y3, z3⟩
+
+/-- EFD `add-2007-bl`, with explicit exceptional branches. -/
+def add {F} [Zero F] [DecidableEq F]
+    [HAdd F F F] [HSub F F F] [HMul F F F] [OfNat F 3]
+    (p q : Point F) : Point F :=
+  if isInfinity p then
+    canonicalize q
+  else if isInfinity q then
+    canonicalize p
+  else
+    let z1z1 := p.z * p.z
+    let z2z2 := q.z * q.z
+    let u1 := p.x * z2z2
+    let u2 := q.x * z1z1
+    let s1 := (p.y * q.z) * z2z2
+    let s2 := (q.y * p.z) * z1z1
+    if u1 = u2 then
+      if s1 = s2 then double p else infinity
+    else
+      let h := u2 - u1
+      let h2 := h + h
+      let i := h2 * h2
+      let j := h * i
+      let r0 := s2 - s1
+      let r := r0 + r0
+      let v := u1 * i
+      let x3 := r * r - j - v - v
+      let s1j2 := (s1 * j) + (s1 * j)
+      let y3 := r * (v - x3) - s1j2
+      let zSum := p.z + q.z
+      let z3 := (zSum * zSum - z1z1 - z2z2) * h
+      ⟨x3, y3, z3⟩
+
+/-- EFD `madd-2007-bl`, adding an affine point to a Jacobian point. -/
+def mixedAdd {F} [Zero F] [DecidableEq F]
+    [HAdd F F F] [HSub F F F] [HMul F F F]
+    [OfNat F 3] [OfNat F 2]
+    {a b} (p : Point F) (q : EllipticCurve F a b) : Point F :=
+  if isInfinity p then
+    ofAffine q
+  else if q.x = 0 ∧ q.y = 0 then
+    canonicalize p
+  else
+    let z1z1 := p.z * p.z
+    let u2 := q.x * z1z1
+    let s2 := (q.y * p.z) * z1z1
+    if p.x = u2 then
+      if p.y = s2 then double p else infinity
+    else
+      let h := u2 - p.x
+      let hh := h * h
+      let i0 := hh + hh
+      let i := i0 + i0
+      let j := h * i
+      let r0 := s2 - p.y
+      let r := r0 + r0
+      let v := p.x * i
+      let x3 := r * r - j - v - v
+      let y1j2 := (p.y * j) + (p.y * j)
+      let y3 := r * (v - x3) - y1j2
+      let z1h := p.z + h
+      let z3 := z1h * z1h - z1z1 - hh
+      ⟨x3, y3, z3⟩
+
+/-- Left-to-right binary multiplication with one final normalization outside.
+The Boolean records whether the legacy affine ladder would double a
+non-infinity `Y = 0` intermediate.  That event is unreachable on the odd-order
+production groups, but it lets the public wrapper preserve the frozen toy-curve
+behavior without corrupting the Jacobian doubling primitive. -/
+def mulLoop {F} [Zero F] [DecidableEq F]
+    [HAdd F F F] [HSub F F F] [HMul F F F]
+    [OfNat F 3] [OfNat F 2]
+    {a b} (p : EllipticCurve F a b) : Nat → Point F × Bool
+  | 0 => ⟨infinity, false⟩
+  | n@(_ + 1) =>
+    let ⟨half, needsAffine⟩ := mulLoop p (n / 2)
+    if needsAffine then
+      ⟨infinity, true⟩
+    else if !isInfinity half && decide (half.y = 0) then
+      ⟨infinity, true⟩
+    else
+      let whole := double half
+      ⟨if (n % 2) = 0 then whole else mixedAdd whole p, false⟩
+
+end EllipticCurve.Jacobian
+
+/-- Stable affine wrapper: dispatch once on `a = 0` and normalize once. -/
+def EllipticCurve.mulBy {F} [Zero F] [DecidableEq F]
+  [HAdd F F F] [HSub F F F] [HMul F F F] [HDiv F F F]
+  [HPow F Nat F] [OfNat F 3] [OfNat F 2]
+  [ToString F]
+  {a b} (p : EllipticCurve F a b) (n : Nat) : EllipticCurve F a b :=
+  if a = 0 then
+    -- Preserve the frozen affine `Y = 0` behavior at the public boundary.
+    if p.y = 0 ∧ p.x ≠ 0 then
+      EllipticCurve.affineMulBy p n
+    else
+      let ⟨q, needsAffine⟩ := EllipticCurve.Jacobian.mulLoop p n
+      if needsAffine then
+        EllipticCurve.affineMulBy p n
+      else
+        EllipticCurve.Jacobian.toAffine q
+  else
+    EllipticCurve.affineMulBy p n
 
 instance {F} [Zero F] [DecidableEq F] [HAdd F F F] [HSub F F F]
   [HMul F F F] [HDiv F F F] [HPow F Nat F] [OfNat F 3] [OfNat F 2] {a b}

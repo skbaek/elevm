@@ -203,6 +203,15 @@ def checkPoint {F} [DecidableEq F] [ToString F] {a b}
   note st name (decide (got = exp))
     s!"got {ppPoint got}, expected {ppPoint exp}"
 
+def ppJacobian {F} [ToString F] (p : EllipticCurve.Jacobian.Point F) : String :=
+  flat s!"({p.x}, {p.y}, {p.z})"
+
+def checkJacobian {F} [DecidableEq F] [ToString F]
+    (st : Tally) (name : String)
+    (got exp : EllipticCurve.Jacobian.Point F) : IO Unit :=
+  note st name (decide (got = exp))
+    s!"got {ppJacobian got}, expected {ppJacobian exp}"
+
 def ppAdr : Option Adr → String
   | none => "none"
   | some a => "0x" ++ (a.toB256.toHex.drop 24)
@@ -253,6 +262,88 @@ abbrev Toy0P : Type := EllipticCurve Toy0F (0 : Toy0F) (5 : Toy0F)
 
 def mkToy (x y : Nat) : ToyP := ⟨.ofNat x, .ofNat y⟩
 def mkToy0 (x y : Nat) : Toy0P := ⟨.ofNat x, .ofNat y⟩
+
+/-! ## Direct Jacobian helper checks -/
+
+/-- Exercise conversion, canonical infinity, doubling, full addition, and
+mixed addition independently of the public scalar wrapper. -/
+def jacobianEdges (st : Tally) : IO Unit := do
+  let inf : secp256k1.Point := ⟨0, 0⟩
+  let jInf : EllipticCurve.Jacobian.Point secp256k1.Coord :=
+    EllipticCurve.Jacobian.infinity
+  let noncanonicalInf : EllipticCurve.Jacobian.Point secp256k1.Coord :=
+    ⟨.ofNat 17, .ofNat 23, 0⟩
+  let g := secp256k1.generator
+  let jg := EllipticCurve.Jacobian.ofAffine g
+  let jNegG := EllipticCurve.Jacobian.ofAffine (-g)
+
+  checkBool st "jacobian recognize canonical infinity"
+    (EllipticCurve.Jacobian.isInfinity jInf)
+  checkBool st "jacobian recognize every Z=0 infinity"
+    (EllipticCurve.Jacobian.isInfinity noncanonicalInf)
+  checkJacobian st "jacobian canonicalize Z=0"
+    (EllipticCurve.Jacobian.canonicalize noncanonicalInf) jInf
+  checkJacobian st "jacobian affine O -> canonical infinity"
+    (EllipticCurve.Jacobian.ofAffine inf) jInf
+  checkPoint st "jacobian Z=0 -> affine O"
+    (EllipticCurve.Jacobian.toAffine noncanonicalInf) inf
+  checkPoint st "jacobian affine round trip"
+    (EllipticCurve.Jacobian.toAffine jg) g
+
+  -- A nontrivial representative of G: (x*z², y*z³, z).
+  let z : secp256k1.Coord := .ofNat 11
+  let z2 := z * z
+  let z3 := z2 * z
+  let scaledG : EllipticCurve.Jacobian.Point secp256k1.Coord :=
+    ⟨g.x * z2, g.y * z3, z⟩
+  checkPoint st "jacobian scaled representative normalizes to G"
+    (EllipticCurve.Jacobian.toAffine scaledG) g
+
+  checkJacobian st "jacobian double infinity is canonical"
+    (EllipticCurve.Jacobian.double noncanonicalInf) jInf
+  checkPoint st "jacobian double G"
+    (EllipticCurve.Jacobian.toAffine (EllipticCurve.Jacobian.double jg))
+    (refDouble g)
+  checkJacobian st "jacobian add O+G"
+    (EllipticCurve.Jacobian.add noncanonicalInf jg) jg
+  checkJacobian st "jacobian add G+O"
+    (EllipticCurve.Jacobian.add jg noncanonicalInf) jg
+  checkPoint st "jacobian full add G+2G"
+    (EllipticCurve.Jacobian.toAffine <|
+      EllipticCurve.Jacobian.add jg (EllipticCurve.Jacobian.double jg))
+    (refMulBy g 3)
+  checkJacobian st "jacobian full add equal points uses double"
+    (EllipticCurve.Jacobian.add jg jg)
+    (EllipticCurve.Jacobian.double jg)
+  checkJacobian st "jacobian full add inverse is canonical infinity"
+    (EllipticCurve.Jacobian.add jg jNegG) jInf
+
+  checkJacobian st "jacobian mixed O+G"
+    (EllipticCurve.Jacobian.mixedAdd noncanonicalInf g) jg
+  checkJacobian st "jacobian mixed G+O"
+    (EllipticCurve.Jacobian.mixedAdd jg inf) jg
+  checkPoint st "jacobian mixed G+2G"
+    (EllipticCurve.Jacobian.toAffine <|
+      EllipticCurve.Jacobian.mixedAdd (EllipticCurve.Jacobian.double jg) g)
+    (refMulBy g 3)
+  checkJacobian st "jacobian mixed equal points uses double"
+    (EllipticCurve.Jacobian.mixedAdd jg g)
+    (EllipticCurve.Jacobian.double jg)
+  checkJacobian st "jacobian mixed inverse is canonical infinity"
+    (EllipticCurve.Jacobian.mixedAdd jg (-g)) jInf
+
+  -- The internal formula is textbook-correct for two-torsion even though the
+  -- public wrapper deliberately retains the historical affine result.
+  let twoTorsion := mkToy0 555 0
+  let jTwo := EllipticCurve.Jacobian.ofAffine twoTorsion
+  let jToyInf : EllipticCurve.Jacobian.Point Toy0F :=
+    EllipticCurve.Jacobian.infinity
+  checkJacobian st "jacobian direct double Y=0 is canonical infinity"
+    (EllipticCurve.Jacobian.double jTwo) jToyInf
+  checkJacobian st "jacobian full add two-torsion is canonical infinity"
+    (EllipticCurve.Jacobian.add jTwo jTwo) jToyInf
+  checkJacobian st "jacobian mixed add two-torsion is canonical infinity"
+    (EllipticCurve.Jacobian.mixedAdd jTwo twoTorsion) jToyInf
 
 /-! ## Groups -/
 
@@ -472,6 +563,9 @@ def main : IO UInt32 := do
   blsPinned st
   bnPinned st
   toyPinned st
+
+  IO.println "--- direct Jacobian helper edges ---"
+  jacobianEdges st
 
   IO.println "--- algebraic identities ---"
   identities st "secp256k1" secp256k1.generator secp256k1.curveOrder
