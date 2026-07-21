@@ -345,6 +345,48 @@ def jacobianEdges (st : Tally) : IO Unit := do
   checkJacobian st "jacobian mixed add two-torsion is canonical infinity"
     (EllipticCurve.Jacobian.mixedAdd jTwo twoTorsion) jToyInf
 
+/-! ## Joint secp256k1 multiplication -/
+
+def checkJoint (st : Tally) (name : String)
+    (rPoint gPoint : secp256k1.Point) (rScalar gScalar : Nat) : IO Unit :=
+  let got : secp256k1.Point :=
+    EllipticCurve.Jacobian.toAffine <|
+      secp256k1.jointMul rPoint gPoint rScalar gScalar
+  let expected :=
+    refAdd (refMulBy rPoint rScalar) (refMulBy gPoint gScalar)
+  checkPoint st name got expected
+
+/-- Directly cover all four table entries, deterministic full-width pairs,
+coefficient/order boundaries, and the table degeneracies `R = G`, `R = -G`,
+and infinity.  Expected points always come from the frozen affine oracle. -/
+def jointGroup (st : Tally) : IO Unit := do
+  let inf : secp256k1.Point := ⟨0, 0⟩
+  let g := secp256k1.generator
+  let r := refMulBy g 2
+  let cases : List (String × Nat × Nat) :=
+    [ ("table bits 00", 0, 0),
+      ("table bits 10", 1, 0),
+      ("table bits 01", 0, 1),
+      ("table bits 11", 1, 1),
+      ("alternating low bits", 0xAAAAAAAAAAAAAAAA, 0x5555555555555555),
+      ("deterministic pair k1/k2", k1 % secp256k1.curveOrder,
+        k2 % secp256k1.curveOrder),
+      ("deterministic mixed pair", (k1 * 7 + 13) % secp256k1.curveOrder,
+        (k2 * 11 + 29) % secp256k1.curveOrder),
+      ("coefficient zeros", 0, 0),
+      ("coefficient n-1/zero", secp256k1.curveOrder - 1, 0),
+      ("coefficient zero/n-1", 0, secp256k1.curveOrder - 1),
+      ("coefficient order/one", secp256k1.curveOrder, 1),
+      ("coefficient n+1/n-1", secp256k1.curveOrder + 1,
+        secp256k1.curveOrder - 1) ]
+  for (name, rScalar, gScalar) in cases do
+    checkJoint st s!"joint {name}" r g rScalar gScalar
+  checkJoint st "joint degeneracy R=G" g g k1 k2
+  checkJoint st "joint degeneracy R=-G" (-g) g k1 k2
+  checkJoint st "joint degeneracy R=infinity" inf g k1 k2
+  checkJoint st "joint degeneracy G=infinity" r inf k1 k2
+  checkJoint st "joint degeneracy both infinity" inf inf k1 k2
+
 /-! ## Groups -/
 
 def sweepCurve {F} [Zero F] [DecidableEq F]
@@ -551,6 +593,19 @@ def recoverGroup (st : Tally) : IO Unit := do
     let exp : Option Adr := c.expected.map Nat.toAdr
     checkAdr st s!"pin recover {c.name}" got exp
     checkAdr st s!"diff recover {c.name}" got ref
+  let differentialCases : List (String × Nat × Bool × Nat × Nat) :=
+    [ ("random-looking coefficients", k1, false, sigR, k2),
+      ("random-looking coefficients/other parity", k1, true, sigR, k2),
+      ("s=n-1", k1, false, sigR, secp256k1.curveOrder - 1),
+      ("s=n+1", k2, true, sigR, secp256k1.curveOrder + 1),
+      ("h=n-1", secp256k1.curveOrder - 1, false, sigR, k1),
+      ("h=n+1", secp256k1.curveOrder + 1, true, sigR, k2),
+      ("invalid r=n+1", k1, false, secp256k1.curveOrder + 1, k2),
+      ("invalid r=B256 max", k2, true, (2 ^ 256) - 1, k1) ]
+  for (name, h, v, r, s) in differentialCases do
+    checkAdr st s!"diff recover {name}"
+      (secp256k1.recover h.toB256 v r.toB256 s.toB256)
+      (refRecover h.toB256 v r.toB256 s.toB256)
 
 end ECOracle
 
@@ -566,6 +621,9 @@ def main : IO UInt32 := do
 
   IO.println "--- direct Jacobian helper edges ---"
   jacobianEdges st
+
+  IO.println "--- joint secp256k1 multiplication ---"
+  jointGroup st
 
   IO.println "--- algebraic identities ---"
   identities st "secp256k1" secp256k1.generator secp256k1.curveOrder

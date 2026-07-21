@@ -762,7 +762,11 @@ def sqrt (x : Coord) : Option Coord :=
   let y := x ^ sqrtExp
   if y * y = x then some y else none
 
-def recover (h : B256) (v : Bool) (r : B256) (s : B256) : Option Adr := do
+/-- The pre-Step-4 affine recovery path.  `recover` retains this path for
+`r = 0` and `r ≥ curveOrder`, where multiplication by `r⁻¹` is not injective
+and moving the historical `sR - zG = ∞` check would change public behavior. -/
+private def recoverAffine
+    (h : B256) (v : Bool) (r : B256) (s : B256) : Option Adr := do
   let x : Coord := .ofNat r.toNat
   let ySquared : Coord := (x * x) * x + 7
   let yFst ← sqrt ySquared
@@ -783,5 +787,67 @@ def recover (h : B256) (v : Bool) (r : B256) (s : B256) : Option Adr := do
     EllipticCurve.mulBy O rInv
   let hash := B8L.keccak <| Q.x.val.toB256.toB8L ++ Q.y.val.toB256.toB8L
   B8L.toAdr? <| List.drop 12 <| hash.toB8L
+
+/-!
+The valid-domain recovery equation is
+
+`Q = r⁻¹ (sR - hG) = (r⁻¹s)R + (-r⁻¹h)G` modulo `curveOrder`.
+
+The joint loop below scans the two 256-bit coefficients left-to-right.  Its
+four-entry selection table is `00 ↦ ∞`, `10 ↦ R`, `01 ↦ G`, and
+`11 ↦ R + G`.  The accumulator and every operation result stay Jacobian;
+the `Z = 1` entries `R` and `G` use the dedicated mixed-add formula, while
+`R + G` is precomputed projectively.  The degenerate `R = G`, `R = -G`, and
+infinity cases are handled by the existing exceptional branches.  Recovery
+performs one affine normalization after the loop.
+-/
+
+private def jointMulLoop
+    (rPoint gPoint : Point)
+    (rgPoint : EllipticCurve.Jacobian.Point Coord) :
+    Nat → Nat → Nat → EllipticCurve.Jacobian.Point Coord
+  | 0, _, _ => EllipticCurve.Jacobian.infinity
+  | fuel + 1, rScalar, gScalar =>
+    let acc := jointMulLoop rPoint gPoint rgPoint fuel (rScalar / 2) (gScalar / 2)
+    let doubled := EllipticCurve.Jacobian.double acc
+    if rScalar % 2 = 0 then
+      if gScalar % 2 = 0 then doubled
+      else EllipticCurve.Jacobian.mixedAdd doubled gPoint
+    else
+      if gScalar % 2 = 0 then EllipticCurve.Jacobian.mixedAdd doubled rPoint
+      else EllipticCurve.Jacobian.add doubled rgPoint
+
+/-- Joint 256-bit projective multiplication used by valid-domain recovery.
+The result is deliberately left Jacobian so callers can inspect infinity and
+normalize exactly once. -/
+def jointMul (rPoint gPoint : Point) (rScalar gScalar : Nat) :
+    EllipticCurve.Jacobian.Point Coord :=
+  let rJacobian := EllipticCurve.Jacobian.ofAffine rPoint
+  let gJacobian := EllipticCurve.Jacobian.ofAffine gPoint
+  let rgJacobian := EllipticCurve.Jacobian.add rJacobian gJacobian
+  jointMulLoop rPoint gPoint rgJacobian 256 rScalar gScalar
+
+def recover (h : B256) (v : Bool) (r : B256) (s : B256) : Option Adr :=
+  if 0 < r.toNat ∧ r.toNat < curveOrder then do
+    let x : Coord := .ofNat r.toNat
+    let ySquared : Coord := (x * x) * x + 7
+    let yFst ← sqrt ySquared
+    let ySnd := FinField.neg yFst
+    let ⟨yOdd, yEven⟩ : Coord × Coord :=
+      if yFst.val % 2 = 0 then ⟨ySnd, yFst⟩ else ⟨yFst, ySnd⟩
+    let y := if v then yOdd else yEven
+    let R : Point := ⟨x, y⟩
+    let rInv : FinField curveOrder := FinField.inv <| .ofNat r.toNat
+    let sScalar : FinField curveOrder := .ofNat s.toNat
+    let hScalar : FinField curveOrder := .ofNat h.toNat
+    let rCoefficient := (rInv * sScalar).val
+    let gCoefficient := (FinField.neg (rInv * hScalar)).val
+    let qJacobian := jointMul R generator rCoefficient gCoefficient
+    if EllipticCurve.Jacobian.isInfinity qJacobian then none
+    let Q : Point := EllipticCurve.Jacobian.toAffine qJacobian
+    let hash := B8L.keccak <| Q.x.val.toB256.toB8L ++ Q.y.val.toB256.toB8L
+    B8L.toAdr? <| List.drop 12 <| hash.toB8L
+  else
+    recoverAffine h v r s
 
 end secp256k1
