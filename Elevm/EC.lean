@@ -333,7 +333,7 @@ instance {F} {a b} [ToString F] : ToString (EllipticCurve F a b) :=
 def EllipticCurve.isOnCurve {F} [Zero F] [DecidableEq F]
   [HAdd F F F] [HMul F F F] [HPow F Nat F] [ToString F]
   {a b} (p : EllipticCurve F a b) : Prop :=
-  (p.x = 0 ∧ p.y = 0) ∨ (p.y ^ 2 = (p.x ^ 3) + (a * p.x) + b)
+  (p.x = 0 ∧ p.y = 0) ∨ (p.y * p.y = ((p.x * p.x) * p.x) + (a * p.x) + b)
 
 instance {F} [Zero F] [DecidableEq F]
   [HAdd F F F] [HMul F F F] [HPow F Nat F] [ToString F]
@@ -367,8 +367,8 @@ def EllipticCurve.double {F} [Zero F] [DecidableEq F]
   then
     p
   else
-    let lam : F := (3 * (p.x ^ 2) + a) / (2 * p.y)
-    let x : F := lam ^ 2 - p.x - p.x
+    let lam : F := (3 * (p.x * p.x) + a) / (2 * p.y)
+    let x : F := lam * lam - p.x - p.x
     let y : F := lam * (p.x - x) - p.y
     ⟨x, y⟩
 
@@ -393,7 +393,7 @@ def EllipticCurve.add {F} [Zero F] [DecidableEq F]
         let yDiff := q.y - p.y
         let xDiff := q.x - p.x
         let lam : F := yDiff / xDiff
-        let x : F := lam ^ 2 - p.x - q.x
+        let x : F := lam * lam - p.x - q.x
         let y : F := lam * (p.x - x) - p.y
         ⟨x, y⟩
 
@@ -583,7 +583,7 @@ def sqrt (x : Coord) : Option Coord :=
 
 def recover (h : B256) (v : Bool) (r : B256) (s : B256) : Option Adr := do
   let x : Coord := .ofNat r.toNat
-  let ySquared : Coord := x ^ 3 + 7
+  let ySquared : Coord := (x * x) * x + 7
   let yFst ← sqrt ySquared
   let ySnd := FinField.neg yFst
   let ⟨yOdd, yEven⟩ : Coord × Coord :=
