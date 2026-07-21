@@ -19,7 +19,9 @@ Discipline, following `scripts/bench-u256.lean`:
   and a per-run input stream would make the medians incomparable.  Iteration
   `i` only shifts the scalar/hash by `i`, which keeps the operand bit-length
   (and therefore the double-and-add cost) constant while preventing the loop
-  body from being hoisted out as a loop invariant.
+  body from being hoisted out as a loop invariant.  Pairing rows instead use
+  one fully forced generator pairing per process; their cost is already large
+  enough for stable process-level repetitions.
 * Each row prints a `sink` that is a deterministic function of every result it
   produced.  A semantics-preserving optimization must reproduce the sink value
   exactly; a changed sink means the row computed something different, not that
@@ -50,6 +52,10 @@ Inputs and their provenance:
 * `benchScalar` is the fixed 256-bit pattern
   `0xFEDCBA98...` reduced into each curve's scalar field.  It is only an
   operand; no secrecy or randomness is claimed.
+* `bn254G2Generator` is the affine generator from the pinned `py_ecc 8.0.0`
+  `optimized_bn128` module.  `BNF2.mk` uses the coefficient order opposite
+  to py_ecc's displayed `(c0, c1)`, so each pair is reversed here; the
+  preflight checks the resulting point before any timed pairing row.
 -/
 
 -- Real signature over keccak("elevm ec oracle step 1") under the private key
@@ -70,10 +76,23 @@ def benchSigV : Bool := false
 def benchScalar : Nat :=
   0xFEDCBA9876543210FEDCBA9876543210FEDCBA9876543210FEDCBA9876543210
 
+def bn254G2Generator : BNP2 :=
+  ⟨
+    BNF2.mk
+      11559732032986387107991004021392285783925812861821192530917403151452391805634
+      10857046999023057135944570762232829481370756359578518086990519993285655852781,
+    BNF2.mk
+      4082367875863433681332203403145435568316851327593401208105741076214120093531
+      8495653923123431417604973247489272438418190587263600148770280649306958101930
+  ⟩
+
 @[noinline] def forceNat (x : Nat) : IO Nat := pure x
 
 -- Sink mixer: order-sensitive, cheap, and independent of the values' size.
 def mix (acc : Nat) (x : Nat) : Nat := (acc * 1000003 + x) % 1000000007
+
+def fieldSink {p} {m : FinFields p} (x : GaloisField p m) : Nat :=
+  x.val.foldl (fun acc c => mix acc c.val) 0
 
 def drive (n : Nat) (acc : Nat) (f : Nat → Nat → Nat) : Nat :=
   go n acc where
@@ -108,6 +127,9 @@ def main : IO UInt32 := do
       IO.println s!"ERROR: benchmark tuple recovered 0x{got}, expected 0x{benchSigAdr}"
       return 1
     IO.println s!"# recover tuple recovers 0x{got} (full successful path)"
+  if !bn254G2Generator.isOnCurve then
+    IO.println "ERROR: the pinned BN254 G2 benchmark generator is not on curve"
+    return 1
   -- Full ecrecover: three 256-bit scalar multiplications, one scalar-field
   -- inversion, one affine subtraction, one keccak.  Iteration `i` perturbs the
   -- message hash only, so `r` (and therefore the square root) is fixed.
@@ -132,4 +154,23 @@ def main : IO UInt32 := do
     mix acc ((blsG2Generator.mulBy
       ((benchScalar + i) % blsCurveOrder)).x.val.foldl
         (fun a c => mix a c.val) 0))
+  -- Full pairings include the Miller loop and final exponentiation.  The
+  -- corresponding `-miller` rows disable only the final exponentiation, so
+  -- Step 7 can distinguish affine loop cost from the exponentiation tail.
+  bench "bn254-pairing" 1 (fun _ acc =>
+    match pairing bn254G2Generator (⟨1, 2⟩ : BNP) with
+    | some f => mix acc (fieldSink f)
+    | none => mix acc 0)
+  bench "bn254-miller" 1 (fun _ acc =>
+    match pairing bn254G2Generator (⟨1, 2⟩ : BNP) false with
+    | some f => mix acc (fieldSink f)
+    | none => mix acc 0)
+  bench "bls-pairing" 1 (fun _ acc =>
+    match blsPairing blsG2Generator blsG1Generator with
+    | some f => mix acc (fieldSink f)
+    | none => mix acc 0)
+  bench "bls-miller" 1 (fun _ acc =>
+    match blsPairing blsG2Generator blsG1Generator false with
+    | some f => mix acc (fieldSink f)
+    | none => mix acc 0)
   return 0
