@@ -5,7 +5,7 @@ import Mathlib.Data.Nat.Basic
 import Mathlib.Data.List.Lemmas
 import Mathlib.Data.List.TakeDrop
 import Mathlib.Data.UInt
-import Mathlib.Tactic.IntervalCases
+import Mathlib.Tactic.NormNum
 -- import Mathlib.Util.Notation3
 -- import Mathlib.Data.Vector.Basic
 
@@ -1180,63 +1180,234 @@ lemma B8L.toB256_pair (b0 b1 : B8) :
   simp only [B8L.toB256, B8L.toB256.go, B8.toB64]
   refine Prod.ext (Prod.ext ?_ ?_) (Prod.ext ?_ ?_) <;> bv_decide
 
-@[simp] lemma B8.toB16_getElem_toBitVec (b : B8) (i : Nat) (hi : i < 16) :
-    b.toB16.toBitVec[i]'hi =
-      if i < 8 then b.toBitVec.getLsbD i else false := by
-  cases b with
-  | ofBitVec v =>
-    by_cases h : i < 8
-    · simp [B8.toB16, h]
-    · simp [B8.toB16, h, BitVec.getLsbD_of_ge v i (by omega)]
+private lemma Nat.lo_lo_of_le_codec {x m n : Nat} (h : n ≤ m) :
+    (x ↾ m) ↾ n = x ↾ n := by
+  unfold Nat.lo
+  rw [Nat.mod_mod_of_dvd]
+  exact Nat.pow_dvd_pow 2 h
 
-@[simp] lemma B8.toB64_getElem_toBitVec (b : B8) (i : Nat) (hi : i < 64) :
-    b.toB64.toBitVec[i]'hi =
-      if i < 8 then b.toBitVec.getLsbD i else false := by
-  cases b with
-  | ofBitVec v =>
-    by_cases h : i < 8
-    · simp [B8.toB64, h]
-    · simp [B8.toB64, h, BitVec.getLsbD_of_ge v i (by omega)]
+private lemma Nat.lo_or_codec (a b n : Nat) :
+    (a ||| b) ↾ n = (a ↾ n) ||| (b ↾ n) :=
+  Nat.or_mod_two_pow
 
-@[simp] lemma B16.toB32_getElem_toBitVec (b : B16) (i : Nat) (hi : i < 32) :
-    b.toB32.toBitVec[i]'hi =
-      if i < 16 then b.toBitVec.getLsbD i else false := by
-  cases b with
-  | ofBitVec v =>
-    by_cases h : i < 16
-    · simp [B16.toB32, h]
-    · simp [B16.toB32, h, BitVec.getLsbD_of_ge v i (by omega)]
+private lemma Nat.lo_64_shr_56_codec (x : Nat) :
+    (x ↾ 64) >>> 56 = (x >>> 56) ↾ 8 := by
+  simpa using (Nat.lo_add_shr (k := x) (m := 8) (n := 56))
 
-@[simp] lemma B32.toB64_getElem_toBitVec (b : B32) (i : Nat) (hi : i < 64) :
-    b.toB64.toBitVec[i]'hi =
-      if i < 32 then b.toBitVec.getLsbD i else false := by
-  cases b with
-  | ofBitVec v =>
-    by_cases h : i < 32
-    · simp [B32.toB64, h]
-    · simp [B32.toB64, h, BitVec.getLsbD_of_ge v i (by omega)]
+private lemma Nat.shl_shr_of_le_codec (x k n : Nat) (h : k ≤ n) :
+    x <<< k >>> n = x >>> (n - k) := by
+  conv_lhs => rw [show n = k + (n - k) by omega]
+  rw [Nat.shiftRight_add, Nat.shiftLeft_shiftRight]
 
--- The explicit 64 bit case split needs a larger elaboration budget, but the
--- resulting proof term uses only ordinary bit-vector extensionality.
-set_option maxHeartbeats 1000000 in
+private lemma B64.small_shr_codec (x : B64) (hx : x.toNat < 2 ^ 8)
+    (n : Nat) (h : 8 ≤ n) : x.toNat >>> n = 0 := by
+  apply Nat.shiftRight_eq_zero
+  exact Nat.lt_of_lt_of_le hx (Nat.pow_le_pow_right (by omega) h)
+
+private lemma Nat.lo_shl_eight_codec {x n w : Nat}
+    (hx : x < 2 ^ 8) (h : 8 + n ≤ w) : (x <<< n) ↾ w = x <<< n := by
+  unfold Nat.lo
+  rw [Nat.mod_eq_of_lt]
+  rw [Nat.shiftLeft_eq]
+  calc
+    x * 2 ^ n < 2 ^ 8 * 2 ^ n :=
+      Nat.mul_lt_mul_of_pos_right hx (Nat.pow_pos (by omega))
+    _ = 2 ^ (8 + n) := (Nat.pow_add _ _ _).symm
+    _ ≤ 2 ^ w := Nat.pow_le_pow_right (by omega) h
+
+private lemma Nat.lo_chunk_shl_codec {x n w : Nat} (h : 8 + n ≤ w) :
+    ((x ↾ 8) <<< n) ↾ w = (x ↾ 8) <<< n :=
+  Nat.lo_shl_eight_codec Nat.lo_lt h
+
+private lemma Nat.lo_zero_codec (n : Nat) : 0 ↾ n = 0 := Nat.zero_mod _
+
+private lemma B64.toNat_shr56_lo (y : B64) :
+    y.toNat >>> 56 = (y.toNat >>> 56) ↾ 8 := by
+  rw [← Nat.lo_64_shr_56_codec]
+  unfold Nat.lo
+  rw [Nat.mod_eq_of_lt B64.toNat_lt]
+
+lemma B64.spill_eight (x y a b c d e f g h : B64)
+    (ha : a.toNat < 2 ^ 8) (hb : b.toNat < 2 ^ 8)
+    (hc : c.toNat < 2 ^ 8) (hd : d.toNat < 2 ^ 8)
+    (he : e.toNat < 2 ^ 8) (hf : f.toNat < 2 ^ 8)
+    (hg : g.toNat < 2 ^ 8) :
+    let step (p : B64 × B64) (b : B64) :=
+      ((p.1 <<< 8) ||| (p.2 >>> 56), (p.2 <<< 8) ||| b)
+    (List.foldl step (x, y) [a, b, c, d, e, f, g, h]).1 = y := by
+  dsimp only [List.foldl]
+  have n8 : B64.toNat 8 % 64 = 8 := rfl
+  have n56 : B64.toNat 56 % 64 = 56 := rfl
+  rw [← B64.toNat_inj]
+  simp only [B64.toNat_or, B64.toNat_shiftLeft, B64.toNat_shiftRight,
+    n8, n56]
+  simp only [Nat.lo_shl, Nat.shiftLeft_or_distrib, Nat.shiftRight_or_distrib]
+  simp only [Nat.lo_or_codec]
+  simp (disch := omega) only [Nat.lo_lo_of_le_codec]
+  simp only [← Nat.shiftLeft_add]
+  norm_num
+  simp only [Nat.lo_64_shr_56_codec, Nat.shiftRight_or_distrib]
+  simp (disch := omega) only [Nat.shl_shr_of_le_codec, B64.small_shr_codec,
+    Nat.zero_shiftLeft, Nat.or_zero]
+  norm_num
+  rw [Nat.shl_lo_eq_zero_of_le (by omega), Nat.zero_or]
+  rw [B64.toNat_shr56_lo]
+  simp only [Nat.lo_zero_codec, Nat.or_zero]
+  simp (disch := omega) only [Nat.lo_chunk_shl_codec]
+  rw [Nat.or_assoc, Nat.or_assoc, Nat.or_assoc, Nat.or_assoc,
+      Nat.or_assoc, Nat.or_assoc]
+  rw [← Nat.lo_add, ← Nat.lo_add, ← Nat.lo_add, ← Nat.lo_add,
+      ← Nat.lo_add, ← Nat.lo_add, ← Nat.lo_add]
+  unfold Nat.lo
+  rw [Nat.mod_eq_of_lt B64.toNat_lt]
+
+private lemma B64.shr56_lt (x : B64) : (x >>> 56).toNat < 2 ^ 8 := by
+  rw [B64.toNat_shiftRight]
+  change x.toNat >>> 56 < 2 ^ 8
+  rw [B64.toNat_shr56_lo]
+  exact Nat.lo_lt
+
+lemma B64.shiftIn_eight (x : B64) (a b c d e f g h : B8) :
+    ((((((((x <<< 8) ||| a.toB64) <<< 8 ||| b.toB64) <<< 8 ||| c.toB64)
+       <<< 8 ||| d.toB64) <<< 8 ||| e.toB64) <<< 8 ||| f.toB64)
+       <<< 8 ||| g.toB64) <<< 8 ||| h.toB64 =
+      B8s.toB64 a b c d e f g h := by
+  have widen (z : B8) : z.toB64.toNat = z.toNat := rfl
+  have n8 : B64.toNat 8 % 64 = 8 := rfl
+  have n16 : B64.toNat 16 % 64 = 16 := rfl
+  have n24 : B64.toNat 24 % 64 = 24 := rfl
+  have n32 : B64.toNat 32 % 64 = 32 := rfl
+  have n40 : B64.toNat 40 % 64 = 40 := rfl
+  have n48 : B64.toNat 48 % 64 = 48 := rfl
+  have n56 : B64.toNat 56 % 64 = 56 := rfl
+  rw [← B64.toNat_inj]
+  simp only [B8s.toB64, B64.toNat_or, B64.toNat_shiftLeft,
+    widen, n8, n16, n24, n32, n40, n48, n56]
+  simp only [Nat.lo_shl, Nat.shiftLeft_or_distrib]
+  simp only [Nat.lo_or_codec]
+  simp (disch := omega) only [Nat.lo_lo_of_le_codec]
+  simp only [← Nat.shiftLeft_add]
+  norm_num
+  rw [Nat.shl_lo_eq_zero_of_le (by omega)]
+  simp
+
+private lemma B8.toNat_toB16_shift8 (x : B8) :
+    (x.toB16 <<< 8).toNat = x.toNat <<< 8 := by
+  rw [B16.toNat_shiftLeft]
+  change (x.toNat <<< 8) ↾ 16 = x.toNat <<< 8
+  unfold B8.toNat
+  exact Nat.lo_shl_eight_codec (UInt8.toNat_lt x) (by omega)
+
+private lemma B16.toNat_toB32_shift16 (x : B16) :
+    (x.toB32 <<< 16).toNat = x.toNat <<< 16 := by
+  rw [B32.toNat_shiftLeft]
+  change (x.toNat <<< 16) ↾ 32 = x.toNat <<< 16
+  unfold Nat.lo
+  rw [Nat.mod_eq_of_lt, Nat.shiftLeft_eq]
+  have hx := B16.toNat_lt (n := x)
+  norm_num at hx ⊢
+  omega
+
+private lemma B32.toNat_toB64_shift32 (x : B32) :
+    (x.toB64 <<< 32).toNat = x.toNat <<< 32 := by
+  rw [B64.toNat_shiftLeft]
+  change (x.toNat <<< 32) ↾ 64 = x.toNat <<< 32
+  unfold Nat.lo
+  rw [Nat.mod_eq_of_lt, Nat.shiftLeft_eq]
+  have hx := B32.toNat_lt (n := x)
+  norm_num at hx ⊢
+  omega
+
+private lemma B8s.toB16_nat (a b : B8) :
+    (B8s.toB16 a b).toNat = (a.toNat <<< 8) ||| b.toNat := by
+  simp only [B8s.toB16, B16.toNat_or, B8.toNat_toB16_shift8]
+  rfl
+
+lemma B8s.toB32_eq_halves (a b c d : B8) :
+    B8s.toB32 a b c d =
+      ((B8s.toB16 a b).toB32 <<< 16) ||| (B8s.toB16 c d).toB32 := by
+  have widen8 (z : B8) : z.toB32.toNat = z.toNat := rfl
+  have widen16 (z : B16) : z.toB32.toNat = z.toNat := rfl
+  have n8 : B32.toNat 8 % 32 = 8 := rfl
+  have n16 : B32.toNat 16 % 32 = 16 := rfl
+  have n24 : B32.toNat 24 % 32 = 24 := rfl
+  rw [← B32.toNat_inj]
+  simp only [B8s.toB32, B32.toNat_or]
+  rw [B16.toNat_toB32_shift16]
+  simp only [widen16, B8s.toB16_nat, B32.toNat_shiftLeft,
+    widen8, n8, n16, n24]
+  unfold B8.toNat
+  rw [Nat.lo_shl_eight_codec (UInt8.toNat_lt a) (by omega),
+      Nat.lo_shl_eight_codec (UInt8.toNat_lt b) (by omega),
+      Nat.lo_shl_eight_codec (UInt8.toNat_lt c) (by omega)]
+  rw [Nat.shiftLeft_or_distrib]
+  simp only [← Nat.shiftLeft_add]
+  norm_num
+  simp only [Nat.or_assoc]
+
+private lemma B8s.toB32_nat (a b c d : B8) :
+    (B8s.toB32 a b c d).toNat =
+      (a.toNat <<< 24) ||| (b.toNat <<< 16) ||| (c.toNat <<< 8) ||| d.toNat := by
+  rw [B8s.toB32_eq_halves]
+  simp only [B32.toNat_or, B16.toNat_toB32_shift16]
+  have widen16 (z : B16) : z.toB32.toNat = z.toNat := rfl
+  simp only [widen16, B8s.toB16_nat]
+  rw [Nat.shiftLeft_or_distrib]
+  simp only [← Nat.shiftLeft_add]
+  norm_num
+  simp only [Nat.or_assoc]
+
+lemma B8s.toB64_eq_halves (a b c d e f g h : B8) :
+    B8s.toB64 a b c d e f g h =
+      ((B8s.toB32 a b c d).toB64 <<< 32) ||| (B8s.toB32 e f g h).toB64 := by
+  have widen8 (z : B8) : z.toB64.toNat = z.toNat := rfl
+  have widen32 (z : B32) : z.toB64.toNat = z.toNat := rfl
+  have n8 : B64.toNat 8 % 64 = 8 := rfl
+  have n16 : B64.toNat 16 % 64 = 16 := rfl
+  have n24 : B64.toNat 24 % 64 = 24 := rfl
+  have n32 : B64.toNat 32 % 64 = 32 := rfl
+  have n40 : B64.toNat 40 % 64 = 40 := rfl
+  have n48 : B64.toNat 48 % 64 = 48 := rfl
+  have n56 : B64.toNat 56 % 64 = 56 := rfl
+  rw [← B64.toNat_inj]
+  simp only [B8s.toB64, B64.toNat_or]
+  rw [B32.toNat_toB64_shift32]
+  simp only [widen32, B8s.toB32_nat, B64.toNat_shiftLeft,
+    widen8, n8, n16, n24, n32, n40, n48, n56]
+  unfold B8.toNat
+  rw [Nat.lo_shl_eight_codec (UInt8.toNat_lt a) (by omega),
+      Nat.lo_shl_eight_codec (UInt8.toNat_lt b) (by omega),
+      Nat.lo_shl_eight_codec (UInt8.toNat_lt c) (by omega),
+      Nat.lo_shl_eight_codec (UInt8.toNat_lt d) (by omega),
+      Nat.lo_shl_eight_codec (UInt8.toNat_lt e) (by omega),
+      Nat.lo_shl_eight_codec (UInt8.toNat_lt f) (by omega),
+      Nat.lo_shl_eight_codec (UInt8.toNat_lt g) (by omega)]
+  simp only [Nat.shiftLeft_or_distrib, ← Nat.shiftLeft_add]
+  norm_num
+  simp only [Nat.or_assoc]
+
 lemma B8s.toB64_eq_toB64 (a b c d e f g h : B8) :
     B8s.toB64 a b c d e f g h = B8L.toB64 [a, b, c, d, e, f, g, h] := by
-  apply UInt64.toBitVec_injective
-  apply BitVec.eq_of_getLsbD_eq
-  intro i hi
-  interval_cases i <;>
-    simp [B8s.toB64, B8L.toB64, B8L.toB32, B8L.toB16, B8L.pack, List.ekatD]
+  rw [B8s.toB64_eq_halves]
+  change
+    ((B8s.toB32 a b c d).toB64 <<< 32) ||| (B8s.toB32 e f g h).toB64 =
+      ((B8L.toB32 [a, b, c, d]).toB64 <<< 32) |||
+        (B8L.toB32 [e, f, g, h]).toB64
+  rw [B8s.toB32_eq_halves, B8s.toB32_eq_halves]
+  rfl
 
-set_option maxHeartbeats 1000000 in
 lemma B8L.toB256_go_eight (l3 l2 l1 l0 : B64) (a b c d e f g h : B8) :
     B8L.toB256.go l3 l2 l1 l0 [a, b, c, d, e, f, g, h] =
       ⟨⟨l2, l1⟩, ⟨l0, B8s.toB64 a b c d e f g h⟩⟩ := by
   simp only [B8L.toB256.go]
   refine Prod.ext (Prod.ext ?_ ?_) (Prod.ext ?_ ?_)
-  all_goals apply UInt64.toBitVec_injective
-  all_goals apply BitVec.eq_of_getLsbD_eq
-  all_goals intro i hi
-  all_goals interval_cases i <;> simp [B8s.toB64]
+  · apply B64.spill_eight (h := 0)
+    all_goals apply B64.shr56_lt
+  · apply B64.spill_eight (h := 0)
+    all_goals apply B64.shr56_lt
+  · apply B64.spill_eight (h := 0)
+    all_goals first | apply B64.shr56_lt | exact UInt8.toNat_lt _
+  · exact B64.shiftIn_eight l0 a b c d e f g h
 
 lemma B8L.toB256_go_eight_cons (l3 l2 l1 l0 : B64) (a b c d e f g h : B8)
     (tail : B8L) :
