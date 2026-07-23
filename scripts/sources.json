@@ -1,0 +1,52 @@
+{
+  "_comment": "Machine-readable lock for ELEVM's external bootstrap inputs. Consumed by scripts/env_doctor.py and (from Step 2 onward) the bootstrap tooling. Documented in scripts/vectors/SOURCES.md. Do not duplicate these literals elsewhere; update this file and let consumers read it.",
+  "schema_version": 1,
+  "execution_specs": {
+    "repo_url": "https://github.com/ethereum/execution-specs.git",
+    "commit": "4198b9c5996713b268aed602739d5aa40e277694",
+    "default_env_var": "EELS_ROOT",
+    "default_subpath_from_home": "execution-specs",
+    "_comment": "Legacy BlockchainTests fixtures live under <root>/tests/fixtures/ethereum_tests, an independent nested checkout (see ethereum_tests below), not an execution-specs submodule."
+  },
+  "ethereum_tests": {
+    "repo_url": "https://github.com/ethereum/tests.git",
+    "commit": "3129f16519013b265fa309208f49406b2ef57b13",
+    "relative_path_from_execution_specs": "tests/fixtures/ethereum_tests",
+    "_comment": "Ignored by execution-specs' .gitignore; not tracked as a Git submodule of execution-specs."
+  },
+  "legacy_tests_submodule": {
+    "name": "LegacyTests",
+    "commit": "2339b9a7457c6e3d8e4271032b0e71c46c61dd29",
+    "relative_path_from_ethereum_tests": "LegacyTests"
+  },
+  "eest": {
+    "release_tag": "v5.4.0",
+    "archive_url": "https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_stable.tar.gz",
+    "archive_filename": "fixtures_stable.tar.gz",
+    "archive_sha256": "92cf1b47ad12fb27163261fc3c1cea5df72439cab507983d06b56c94f8741909",
+    "default_env_var": "EEST_ROOT",
+    "default_subpath_from_home": "eest-fixtures",
+    "fixtures_subpath": "fixtures",
+    "_comment_env_var": "EEST_ROOT names the top-level install directory containing the archive and its extracted fixtures/ tree. It is distinct from scripts/check.sh's ELEVM_FIXTURES, which instead points directly at a tier's leaf fixture directory (and already defaults to <EEST_ROOT>/fixtures/blockchain_tests for --bls). The two variables are not interchangeable.",
+    "expected_top_level_dirs": [
+      "blockchain_tests",
+      "blockchain_tests_engine",
+      "blockchain_tests_engine_x",
+      "state_tests",
+      "transaction_tests"
+    ],
+    "bls_tier_subpaths": [
+      "blockchain_tests/prague/eip2537_bls_12_381_precompiles",
+      "blockchain_tests/cancun/eip4844_blobs"
+    ]
+  },
+  "python_oracle": {
+    "intended_version": "3.11.9",
+    "known_packages": {
+      "py-ecc": "8.0.0",
+      "coincurve": "20.0.0"
+    },
+    "full_lock_status": "deferred_to_step_4",
+    "_comment": "This records only the currently-known-good versions used by scripts/gen-bls-consts.py. The complete transitive dependency lock is Step 4 work."
+  }
+}

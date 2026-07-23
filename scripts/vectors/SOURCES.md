@@ -1,5 +1,23 @@
 # Pinned sources for compact MSM vectors and EEST fixtures
 
+The external-source facts on this page (execution-specs, ethereum/tests,
+LegacyTests, and EEST) are also recorded machine-readably in
+[`scripts/sources.json`](../sources.json), the single manifest that later
+bootstrap tooling and generators are expected to consume rather than
+duplicating these literals. [`scripts/env_doctor.py`](../env_doctor.py) is a
+read-only, Python-standard-library-only diagnostic that checks the current
+checkouts, the EEST archive/extraction, and the Python oracle venv against
+that manifest; it never downloads, clones, installs, or repairs anything.
+Run it with `python3 scripts/env_doctor.py` (add `--json` for machine-readable
+output); pass `--execution-specs`, `--eest-root`, or `--venv` to point it at
+non-default locations, or `--manifest` to check against a different manifest
+file entirely. Its `EEST_ROOT` override is a doctor-specific variable naming
+the top-level EEST install directory (containing the archive and its
+extracted `fixtures/` tree); it is distinct from `scripts/check.sh`'s
+`ELEVM_FIXTURES`, which instead points directly at a tier's leaf fixture
+directory. The full bootstrap/installer story is Step 2+ work — this page's
+manual instructions below remain the current procedure.
+
 ## EEST blockchain fixtures (Step 9, `--bls` tier)
 
 The `--bls` tier of `scripts/check.sh` runs EEST consensus fixtures that are
