@@ -18,4 +18,11 @@ You need to have [elan](https://github.com/leanprover/elan) installed.
 
 `lake exe elevm /path/to/test`
 
+## External test fixtures
+
+The fixture suites use pinned data outside this repository. See
+[`scripts/vectors/SOURCES.md`](scripts/vectors/SOURCES.md) for the safe
+execution-specs/legacy-fixture bootstrap, environment doctor, path overrides,
+disk requirements, and EEST source information.
+
 [^1]:As of 2025/09/19, commit [`4198...7694`](https://github.com/ethereum/execution-specs/tree/4198b9c5996713b268aed602739d5aa40e277694)

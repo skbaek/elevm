@@ -15,8 +15,65 @@ file entirely. Its `EEST_ROOT` override is a doctor-specific variable naming
 the top-level EEST install directory (containing the archive and its
 extracted `fixtures/` tree); it is distinct from `scripts/check.sh`'s
 `ELEVM_FIXTURES`, which instead points directly at a tier's leaf fixture
-directory. The full bootstrap/installer story is Step 2+ work — this page's
-manual instructions below remain the current procedure.
+directory.
+
+## Legacy fixture Git bootstrap
+
+[`scripts/bootstrap_legacy.py`](../bootstrap_legacy.py) safely creates the
+Git-backed sources used by the ordinary fixture tiers:
+
+1. execution-specs, detached at the manifest commit;
+2. the ignored, independent `tests/fixtures/ethereum_tests` checkout, detached
+   at its manifest commit; and
+3. only that checkout's required `LegacyTests` submodule, at the manifest
+   gitlink commit.
+
+Preview a fresh install without network or filesystem changes:
+
+```sh
+python3 scripts/bootstrap_legacy.py --dry-run
+```
+
+Install to the compatible default `~/execution-specs`, or select another
+destination explicitly:
+
+```sh
+python3 scripts/bootstrap_legacy.py
+python3 scripts/bootstrap_legacy.py --execution-specs "/path/with spaces/execution-specs"
+EELS_ROOT="/another/path/execution-specs" python3 scripts/bootstrap_legacy.py
+```
+
+`--execution-specs` takes precedence over `EELS_ROOT`; otherwise the
+manifest's home-relative default is used. The current known-good installation
+occupies about 5.9 GB. Allow at least 7 GB of free space in the destination
+filesystem and expect several gigabytes of public GitHub network transfer;
+actual transfer size and duration depend on Git and server compression. The
+bootstrap does not install Python packages or EEST fixtures.
+
+The command builds a missing destination in a temporary sibling, verifies all
+three repositories, and then places it atomically where the filesystem
+supports an ordinary sibling rename. A fully correct existing installation is
+an offline no-op. Any other existing target—empty, nonempty, partial, dirty,
+at the wrong revision, or using an unexpected origin—is refused without
+repair or overwrite.
+
+After an interrupted process, the final destination is either absent or was
+already fully placed. Inspect any sibling named
+`.execution-specs.bootstrap-*` before removing it manually. For a refused
+destination, inspect it and either move/remove it yourself only when certain
+it is disposable, or choose a different `--execution-specs` path; the command
+intentionally has no force/repair mode. Verify the finished environment with:
+
+```sh
+python3 scripts/env_doctor.py --legacy-only \
+  --execution-specs "/path/to/execution-specs"
+```
+
+Omit `--legacy-only` to also diagnose the EEST and Python components handled
+by later portability steps.
+
+The test harness's existing `ELEVM_FIXTURES` override is unchanged and points
+directly to `BlockchainTests`, not to the execution-specs root.
 
 ## EEST blockchain fixtures (Step 9, `--bls` tier)
 

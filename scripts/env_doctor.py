@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Read-only diagnostic for ELEVM's external-source environment (Step 1).
+"""Read-only diagnostic for ELEVM's external-source environment (Steps 1-2).
 
 Checks the manifest in scripts/sources.json against the local filesystem and
 Git state: execution-specs, the nested ethereum/tests + LegacyTests checkout,
 the EEST release archive/extraction, and the Python oracle venv when present.
 
 This script never edits, fetches, clones, initializes, activates, or repairs
-anything. It only reads. Bootstrap/repair tooling is later-step work.
+anything. It only reads. scripts/bootstrap_legacy.py can create a missing
+Git-backed legacy-fixture installation, but also refuses to repair one.
 
 Python-standard-library only.
 
@@ -52,6 +53,14 @@ def load_manifest(path: Path) -> dict:
     except json.JSONDecodeError as error:
         raise ManifestError(f"manifest {path} is not valid JSON: {error}") from error
 
+    if not isinstance(data, dict):
+        raise ManifestError(f"manifest {path} root must be a JSON object")
+    if data.get("schema_version") != 1:
+        raise ManifestError(
+            f"manifest {path} has unsupported schema_version "
+            f"{data.get('schema_version')!r}; expected 1"
+        )
+
     required_top = (
         "execution_specs",
         "ethereum_tests",
@@ -78,6 +87,10 @@ def load_manifest(path: Path) -> dict:
         "python_oracle": ("intended_version", "known_packages"),
     }
     for section, fields in required_fields.items():
+        if not isinstance(data[section], dict):
+            raise ManifestError(
+                f"manifest {path} section {section!r} must be a JSON object"
+            )
         for field in fields:
             if field not in data[section]:
                 raise ManifestError(
@@ -92,6 +105,8 @@ class ManifestError(Exception):
 
 def run_git(args: list[str], cwd: Path) -> Optional[str]:
     """Run a read-only git command; None on any failure (never raises)."""
+    environment = os.environ.copy()
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
     try:
         result = subprocess.run(
             ["git", *args],
@@ -99,6 +114,7 @@ def run_git(args: list[str], cwd: Path) -> Optional[str]:
             capture_output=True,
             text=True,
             check=False,
+            env=environment,
         )
     except OSError:
         return None
@@ -202,6 +218,35 @@ def check_ethereum_tests(manifest: dict, execution_specs_root: Path) -> list[Che
 
     legacy = manifest["legacy_tests_submodule"]
     legacy_path = path / legacy["relative_path_from_ethereum_tests"]
+    gitlink = run_git(
+        ["ls-tree", "HEAD", "--", legacy["relative_path_from_ethereum_tests"]],
+        path,
+    )
+    expected_gitlink = (
+        f"160000 commit {legacy['commit']}\t"
+        f"{legacy['relative_path_from_ethereum_tests']}"
+    )
+    if gitlink is None:
+        checks.append(
+            Check(
+                "ethereum/tests: LegacyTests gitlink",
+                STATUS_FAIL,
+                f"could not read gitlink in {path}",
+            )
+        )
+    elif gitlink != expected_gitlink:
+        checks.append(
+            Check(
+                "ethereum/tests: LegacyTests gitlink",
+                STATUS_FAIL,
+                f"expected {expected_gitlink}, got {gitlink or 'no entry'}",
+            )
+        )
+    else:
+        checks.append(
+            Check("ethereum/tests: LegacyTests gitlink", STATUS_OK, legacy["commit"])
+        )
+
     # The submodule has no independent 'origin' expectation in the manifest
     # (only its pinned commit); its remote is whatever ethereum/tests'
     # .gitmodules declares.
@@ -213,6 +258,24 @@ def check_ethereum_tests(manifest: dict, execution_specs_root: Path) -> list[Che
             legacy["commit"],
         )
     )
+
+    blockchain_tests = path / "BlockchainTests"
+    if blockchain_tests.is_dir():
+        checks.append(
+            Check(
+                "legacy fixtures: BlockchainTests",
+                STATUS_OK,
+                str(blockchain_tests),
+            )
+        )
+    else:
+        checks.append(
+            Check(
+                "legacy fixtures: BlockchainTests",
+                STATUS_MISSING,
+                f"not found: {blockchain_tests}",
+            )
+        )
     return checks
 
 
@@ -407,6 +470,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Python oracle venv path (default: <execution-specs root>/venv)",
     )
+    parser.add_argument(
+        "--legacy-only",
+        action="store_true",
+        help="check only Git-backed legacy fixture sources; skip EEST and Python "
+        "(the components deliberately not installed by bootstrap_legacy.py)",
+    )
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     return parser
 
@@ -441,8 +510,9 @@ def main(argv: list[str]) -> int:
     checks.extend(check_required_commands())
     checks.extend(check_execution_specs(manifest, execution_specs_root))
     checks.extend(check_ethereum_tests(manifest, execution_specs_root))
-    checks.extend(check_eest(manifest, eest_root))
-    checks.extend(check_python_oracle(manifest, venv_path))
+    if not args.legacy_only:
+        checks.extend(check_eest(manifest, eest_root))
+        checks.extend(check_python_oracle(manifest, venv_path))
 
     ok = all(check.status == STATUS_OK for check in checks)
 

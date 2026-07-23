@@ -15,7 +15,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 SCRIPTS_DIR = Path(__file__).resolve().parents[1]
@@ -135,6 +135,24 @@ class ManifestParsingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(env_doctor.ManifestError):
                 env_doctor.load_manifest(Path(tmp) / "does-not-exist.json")
+
+    def test_non_object_section_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "sources.json"
+            data = make_manifest(manifest_path)
+            data["execution_specs"] = []
+            manifest_path.write_text(json.dumps(data))
+            with self.assertRaises(env_doctor.ManifestError):
+                env_doctor.load_manifest(manifest_path)
+
+    def test_unsupported_schema_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "sources.json"
+            data = make_manifest(manifest_path)
+            data["schema_version"] = 2
+            manifest_path.write_text(json.dumps(data))
+            with self.assertRaises(env_doctor.ManifestError):
+                env_doctor.load_manifest(manifest_path)
 
 
 class GitCheckoutTests(unittest.TestCase):
@@ -311,9 +329,50 @@ class MainCliTests(unittest.TestCase):
         execution_specs = tmp / "execution-specs"
         es_commit = make_git_repo(execution_specs, origin="https://example.invalid/execution-specs.git")
         ethereum_tests = execution_specs / "tests" / "fixtures" / "ethereum_tests"
-        et_commit = make_git_repo(ethereum_tests, origin="https://example.invalid/tests.git")
+        make_git_repo(ethereum_tests, origin="https://example.invalid/tests.git")
+        (ethereum_tests / "BlockchainTests").mkdir()
+        (ethereum_tests / "BlockchainTests" / "fixture.json").write_text("{}\n")
         legacy = ethereum_tests / "LegacyTests"
         legacy_commit = make_git_repo(legacy)
+        (ethereum_tests / ".gitmodules").write_text(
+            "[submodule \"LegacyTests\"]\n"
+            "\tpath = LegacyTests\n"
+            "\turl = https://example.invalid/legacytests.git\n"
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(ethereum_tests),
+                "add",
+                ".gitmodules",
+                "BlockchainTests",
+                "LegacyTests",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(ethereum_tests),
+                "commit",
+                "-q",
+                "-m",
+                "add fixtures and LegacyTests gitlink",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        et_commit = subprocess.run(
+            ["git", "-C", str(ethereum_tests), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
         eest_root = tmp / "eest-fixtures"
         eest_root.mkdir()
@@ -377,6 +436,42 @@ class MainCliTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertTrue(all(c["status"] == "ok" for c in payload["checks"]))
 
+    def test_legacy_only_skips_deferred_eest_and_python(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            manifest_path, execution_specs, _, _ = self._build_good_environment(
+                tmp_path
+            )
+            missing = tmp_path / "deliberately-missing"
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = env_doctor.main(
+                    [
+                        "--manifest",
+                        str(manifest_path),
+                        "--execution-specs",
+                        str(execution_specs),
+                        "--eest-root",
+                        str(missing / "eest"),
+                        "--venv",
+                        str(missing / "venv"),
+                        "--legacy-only",
+                        "--json",
+                    ]
+                )
+            self.assertEqual(rc, 0)
+            payload = json.loads(buf.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertFalse(
+                any(check["name"].startswith("eest:") for check in payload["checks"])
+            )
+            self.assertFalse(
+                any(
+                    check["name"].startswith("python-oracle:")
+                    for check in payload["checks"]
+                )
+            )
+
     def test_missing_environment_fails_without_creating_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -401,7 +496,7 @@ class MainCliTests(unittest.TestCase):
             manifest_path = Path(tmp) / "sources.json"
             manifest_path.write_text("{ not json")
             buf = io.StringIO()
-            with redirect_stdout(io.StringIO()), redirect_stdout(buf):
+            with redirect_stdout(buf), redirect_stderr(io.StringIO()):
                 rc = env_doctor.main(["--manifest", str(manifest_path)])
             self.assertEqual(rc, 2)
 
