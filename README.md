@@ -22,7 +22,23 @@ You need to have [elan](https://github.com/leanprover/elan) installed.
 
 The fixture suites use pinned data outside this repository. See
 [`scripts/vectors/SOURCES.md`](scripts/vectors/SOURCES.md) for the safe
-execution-specs/legacy-fixture bootstrap, environment doctor, path overrides,
-disk requirements, and EEST source information.
+execution-specs/legacy-fixture and EEST bootstrap, frozen Python oracle,
+environment doctor, path overrides, disk requirements, and long-test
+requirements.
+
+## Portability checks in CI
+
+CI preserves the ordinary Lean build and separately runs the standard-library
+unit suite for the source manifest, read-only doctor, legacy/EEST/oracle
+bootstraps, malicious archive handling, and generator path/pin checks. The
+tests create only tiny synthetic Git repositories and fixture archives in their
+temporary workspace; CI never downloads the EEST release or a complete legacy
+fixture corpus.
+
+The workflows intentionally use maintained major-version action tags
+(`actions/checkout@v6`, `actions/setup-python@v5`, and
+`leanprover/lean-action@v1`) instead of immutable commit SHAs. Review the
+corresponding official action release notes before a tag update, and keep that
+policy consistent within ELEVM.
 
 [^1]:As of 2025/09/19, commit [`4198...7694`](https://github.com/ethereum/execution-specs/tree/4198b9c5996713b268aed602739d5aa40e277694)

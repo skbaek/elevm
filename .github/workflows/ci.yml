@@ -10,7 +10,22 @@ on:
 permissions:
   contents: read
 
+# This repository intentionally follows maintained major-version action tags
+# rather than commit SHAs. Review upstream release notes before changing a tag;
+# keep this policy consistent across ELEVM workflows.
 jobs:
+  portability:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run portable-environment unit tests
+        run: python3 -m unittest discover -s scripts/tests
+
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

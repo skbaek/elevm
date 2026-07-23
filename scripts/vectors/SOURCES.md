@@ -27,6 +27,12 @@ changed, missing, or extra file. Deep mode reads far more data and is
 correspondingly slower, but stays bounded in memory; it is intended for
 occasional integrity audits rather than every run.
 
+The repository CI exercises the manifest, doctor, bootstrap, archive-safety,
+and generator argument/pin behavior only with tiny synthetic inputs. It never
+downloads the EEST release, the full legacy corpus, or the frozen oracle
+packages. Run the bootstrap and long fixture tiers locally only when their
+network, disk, and runtime requirements above are available.
+
 ## Legacy fixture Git bootstrap
 
 [`scripts/bootstrap_legacy.py`](../bootstrap_legacy.py) safely creates the
@@ -85,7 +91,7 @@ by later portability steps.
 The test harness's existing `ELEVM_FIXTURES` override is unchanged and points
 directly to `BlockchainTests`, not to the execution-specs root.
 
-## EEST blockchain fixtures (Step 9, `--bls` tier)
+## EEST blockchain fixtures (`--bls` tier)
 
 The `--bls` tier of `scripts/check.sh` runs EEST consensus fixtures that are
 too large to vendor. They come from one pinned execution-spec-tests fixture
