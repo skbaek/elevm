@@ -17,6 +17,16 @@ extracted `fixtures/` tree); it is distinct from `scripts/check.sh`'s
 `ELEVM_FIXTURES`, which instead points directly at a tier's leaf fixture
 directory.
 
+The EEST checks come in two depths. The default *fast* check verifies the
+archive's SHA-256 when the archive is present, the extracted top-level fixture
+directories, the exact leaf directories the `--bls` tier consumes, and the
+release provenance recorded in the tree's own `fixtures/.meta/fixtures.ini`.
+Adding `--eest-deep` additionally streams the release archive and compares it
+file-by-file against the extracted tree, hashing every fixture to detect any
+changed, missing, or extra file. Deep mode reads far more data and is
+correspondingly slower, but stays bounded in memory; it is intended for
+occasional integrity audits rather than every run.
+
 ## Legacy fixture Git bootstrap
 
 [`scripts/bootstrap_legacy.py`](../bootstrap_legacy.py) safely creates the
@@ -88,6 +98,56 @@ release, unpacked outside the repo at `~/eest-fixtures/fixtures/`:
 The tier reads `blockchain_tests/prague/eip2537_bls_12_381_precompiles/` and
 the point-evaluation files under `blockchain_tests/cancun/eip4844_blobs/`
 (their cases are regenerated per network; the tier selects the Prague ones).
+
+### Safe EEST bootstrap
+
+[`scripts/bootstrap_eest.py`](../bootstrap_eest.py) acquires this release
+safely from the manifest's EEST fields. It installs into the top-level
+`EEST_ROOT` directory (default `~/eest-fixtures`), which holds both the
+release archive and its extracted `fixtures/` tree:
+
+```sh
+python3 scripts/bootstrap_eest.py --dry-run          # plan only, no changes
+python3 scripts/bootstrap_eest.py                     # install to ~/eest-fixtures
+python3 scripts/bootstrap_eest.py --eest-root "/data/eest fixtures"
+```
+
+`--eest-root` (or `$EEST_ROOT`) selects the install directory;
+`--archive-cache` overrides where the archive is read from and stored
+(default `<eest-root>/fixtures_stable.tar.gz`). Point `--archive-cache` at an
+already-downloaded copy to install fully offline.
+
+The command:
+
+- reuses an already-present archive whose SHA-256 matches, with no network
+  access; otherwise downloads once to a `*.part` file, verifies the checksum
+  **before** extraction, and only then promotes it by an atomic rename;
+- extracts through a member-by-member validator that refuses absolute paths,
+  `..` traversal, symlinks, hardlinks, and device/special members, staging the
+  tree in a temporary sibling and placing it atomically at
+  `<eest-root>/fixtures`;
+- verifies the extracted layout, `--bls` tier directories, and release
+  provenance before placement;
+- treats a fully correct existing installation as an offline no-op.
+
+The extracted tree occupies about 4.1 GB and the archive about 250 MB. Allow
+at least 9 GB of free space in the destination filesystem for a fresh install
+(archive plus tree plus transient staging). The download is a single public
+GitHub release asset; exact transfer time depends on your connection.
+
+Any existing but non-matching state is refused, never repaired: a cached
+archive with the wrong checksum, a partial or modified `fixtures/` tree, or a
+tree with the wrong provenance all stop the command with recovery guidance.
+The bootstrap never deletes, resets, or overwrites an existing fixture tree.
+After an interruption the final `fixtures/` directory is either absent or was
+already fully placed; inspect any leftover `.fixtures.bootstrap-*` staging
+sibling or `fixtures_stable.tar.gz.part` file and remove it manually if you
+are certain it is disposable. Verify a finished installation, including a full
+integrity audit, with:
+
+```sh
+python3 scripts/env_doctor.py --eest-root ~/eest-fixtures --eest-deep
+```
 
 The four committed `*.head.json` files contain the first 32 entries of their
 full upstream vectors. Regenerate them with the committed `jq '.[0:32]'`

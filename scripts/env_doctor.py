@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Read-only diagnostic for ELEVM's external-source environment (Steps 1-2).
+"""Read-only diagnostic for ELEVM's external-source environment.
 
 Checks the manifest in scripts/sources.json against the local filesystem and
 Git state: execution-specs, the nested ethereum/tests + LegacyTests checkout,
 the EEST release archive/extraction, and the Python oracle venv when present.
+The EEST checks are fast by default (archive hash, expected layout, --bls tier
+directories, and the release provenance in fixtures/.meta/fixtures.ini);
+--eest-deep additionally streams the archive and compares it file-by-file
+against the extracted tree to detect changed, missing, or extra fixtures.
 
 This script never edits, fetches, clones, initializes, activates, or repairs
 anything. It only reads. scripts/bootstrap_legacy.py can create a missing
-Git-backed legacy-fixture installation, but also refuses to repair one.
+Git-backed legacy-fixture installation and scripts/bootstrap_eest.py can create
+a missing EEST installation; both refuse to repair an existing one.
 
 Python-standard-library only.
 
@@ -19,14 +24,16 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import configparser
 import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 from dataclasses import dataclass, asdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 DEFAULT_MANIFEST = Path(__file__).resolve().parent / "sources.json"
@@ -279,12 +286,72 @@ def check_ethereum_tests(manifest: dict, execution_specs_root: Path) -> list[Che
     return checks
 
 
+_STREAM_CHUNK = 1024 * 1024
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        for chunk in iter(lambda: handle.read(_STREAM_CHUNK), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha256_stream(handle) -> str:
+    """SHA-256 of a binary file-like object, read in bounded-size chunks."""
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: handle.read(_STREAM_CHUNK), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+class UnsafeArchiveMember(Exception):
+    """An archive member whose name or type is not safe to extract or trust."""
+
+
+def safe_member_relpath(name: str) -> PurePosixPath:
+    """Return a normalized, guaranteed-safe relative POSIX path for an archive
+    member name, or raise UnsafeArchiveMember.
+
+    Rejects empty names, Windows drive/UNC forms, absolute paths, and any '.'
+    or '..' component. The result never escapes the extraction root.
+    """
+    if not name:
+        raise UnsafeArchiveMember("archive member has an empty name")
+    # Reject Windows drive letters and backslash separators outright rather
+    # than trying to normalize them; the fixture archive is POSIX-only.
+    if "\\" in name or (len(name) >= 2 and name[1] == ":"):
+        raise UnsafeArchiveMember(f"archive member is not a POSIX path: {name!r}")
+    pure = PurePosixPath(name)
+    if pure.is_absolute():
+        raise UnsafeArchiveMember(f"archive member has an absolute path: {name!r}")
+    parts = pure.parts
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise UnsafeArchiveMember(
+            f"archive member has an unsafe path component: {name!r}"
+        )
+    return PurePosixPath(*parts)
+
+
+def classify_member(member: tarfile.TarInfo) -> str:
+    """Return 'file' or 'dir' for a safe member, else raise UnsafeArchiveMember.
+
+    Regular files and directories are the only member types the fixture
+    archive is expected to contain. Symlinks, hardlinks, character/block
+    devices, FIFOs, and any other special members are refused so that a
+    tampered archive cannot write or link outside the extraction root.
+    """
+    if member.isreg():
+        return "file"
+    if member.isdir():
+        return "dir"
+    if member.issym() or member.islnk():
+        raise UnsafeArchiveMember(
+            f"archive member is a link, which is not accepted: {member.name!r}"
+        )
+    raise UnsafeArchiveMember(
+        f"archive member has an unsupported special type: {member.name!r}"
+    )
 
 
 def check_eest(manifest: dict, eest_root: Path) -> list[Check]:
@@ -325,26 +392,266 @@ def check_eest(manifest: dict, eest_root: Path) -> list[Check]:
                 f"not found: {fixtures_root}",
             )
         )
+        return checks
+
+    missing_dirs = [
+        d for d in spec["expected_top_level_dirs"] if not (fixtures_root / d).is_dir()
+    ]
+    if missing_dirs:
+        checks.append(
+            Check(
+                "eest: extracted fixtures",
+                STATUS_FAIL,
+                f"missing expected subdirectories: {', '.join(missing_dirs)}",
+            )
+        )
     else:
-        missing_dirs = [
-            d for d in spec["expected_top_level_dirs"] if not (fixtures_root / d).is_dir()
+        checks.append(
+            Check(
+                "eest: extracted fixtures",
+                STATUS_OK,
+                f"{len(spec['expected_top_level_dirs'])} expected top-level dirs present",
+            )
+        )
+
+    checks.extend(_check_eest_metadata(spec, fixtures_root))
+    checks.extend(_check_eest_bls_tier(spec, fixtures_root))
+    return checks
+
+
+def _check_eest_metadata(spec: dict, fixtures_root: Path) -> list[Check]:
+    """Confirm the extracted tree carries the pinned release provenance from
+    its own .meta/fixtures.ini. Skipped when the manifest omits the fields."""
+    subpath = spec.get("metadata_file_subpath")
+    expected = spec.get("metadata_expected")
+    if not subpath or not isinstance(expected, dict):
+        return []
+
+    try:
+        relative = safe_member_relpath(subpath)
+    except UnsafeArchiveMember as error:
+        return [Check("eest: fixture metadata", STATUS_FAIL, str(error))]
+    metadata_path = fixtures_root / Path(*relative.parts)
+    if not metadata_path.is_file():
+        return [
+            Check(
+                "eest: fixture metadata",
+                STATUS_MISSING,
+                f"not found: {metadata_path}",
+            )
         ]
-        if missing_dirs:
-            checks.append(
-                Check(
-                    "eest: extracted fixtures",
-                    STATUS_FAIL,
-                    f"missing expected subdirectories: {', '.join(missing_dirs)}",
-                )
+
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read_string(metadata_path.read_text(), source=str(metadata_path))
+    except (OSError, configparser.Error) as error:
+        return [
+            Check(
+                "eest: fixture metadata",
+                STATUS_FAIL,
+                f"could not parse {metadata_path}: {error}",
             )
-        else:
-            checks.append(
-                Check(
-                    "eest: extracted fixtures",
-                    STATUS_OK,
-                    f"{len(spec['expected_top_level_dirs'])} expected top-level dirs present",
-                )
+        ]
+
+    mismatches = []
+    for key, want in expected.items():
+        got = parser.get("fixtures", key, fallback=None)
+        if got != want:
+            mismatches.append(f"{key}: expected {want!r}, got {got!r}")
+    if mismatches:
+        return [
+            Check("eest: fixture metadata", STATUS_FAIL, "; ".join(mismatches))
+        ]
+    return [
+        Check(
+            "eest: fixture metadata",
+            STATUS_OK,
+            ", ".join(f"{key}={want}" for key, want in expected.items()),
+        )
+    ]
+
+
+def _check_eest_bls_tier(spec: dict, fixtures_root: Path) -> list[Check]:
+    """Confirm the exact leaf directories consumed by scripts/bls-tests.txt via
+    scripts/check.sh --bls exist. Skipped when the manifest omits the field."""
+    subpaths = spec.get("bls_tier_subpaths")
+    if not subpaths:
+        return []
+    missing = []
+    for sub in subpaths:
+        try:
+            relative = safe_member_relpath(sub)
+        except UnsafeArchiveMember as error:
+            return [Check("eest: bls tier fixtures", STATUS_FAIL, str(error))]
+        if not (fixtures_root / Path(*relative.parts)).is_dir():
+            missing.append(sub)
+    if missing:
+        return [
+            Check(
+                "eest: bls tier fixtures",
+                STATUS_FAIL,
+                f"missing BLS tier directories: {', '.join(missing)}",
             )
+        ]
+    return [
+        Check(
+            "eest: bls tier fixtures",
+            STATUS_OK,
+            f"{len(subpaths)} BLS tier director(ies) present",
+        )
+    ]
+
+
+def deep_compare_eest(manifest: dict, eest_root: Path) -> list[Check]:
+    """Read-only deep verification: compare the extracted fixture tree against
+    the verified release archive strongly enough to detect changed, missing,
+    and extra files.
+
+    The archive is streamed once (bounded memory); each regular member's
+    content hash is compared with the on-disk file, and the extracted tree is
+    then walked to find files absent from the archive. Nothing is modified.
+    """
+    spec = manifest["eest"]
+    checks: list[Check] = []
+
+    archive_path = eest_root / spec["archive_filename"]
+    fixtures_subpath = spec["fixtures_subpath"]
+    fixtures_root = eest_root / fixtures_subpath
+
+    if not archive_path.is_file():
+        return [
+            Check(
+                "eest deep: archive",
+                STATUS_MISSING,
+                f"cannot deep-verify without the release archive: {archive_path}",
+            )
+        ]
+    if not fixtures_root.is_dir():
+        return [
+            Check(
+                "eest deep: extracted fixtures",
+                STATUS_MISSING,
+                f"cannot deep-verify without the extracted tree: {fixtures_root}",
+            )
+        ]
+
+    # Deep comparison is only meaningful against the pinned archive, so confirm
+    # its checksum first rather than trusting whatever bytes are on disk.
+    actual_hash = sha256_file(archive_path)
+    if actual_hash != spec["archive_sha256"]:
+        return [
+            Check(
+                "eest deep: archive sha256",
+                STATUS_FAIL,
+                f"expected {spec['archive_sha256']}, got {actual_hash}; "
+                "refusing to deep-verify against an unverified archive",
+            )
+        ]
+
+    prefix = fixtures_subpath.rstrip("/") + "/"
+    archive_files: set[str] = set()
+    changed: list[str] = []
+    missing: list[str] = []
+    unsafe: list[str] = []
+    member_count = 0
+
+    try:
+        with tarfile.open(archive_path, mode="r|gz") as archive:
+            for member in archive:
+                try:
+                    kind = classify_member(member)
+                    relative = safe_member_relpath(member.name)
+                except UnsafeArchiveMember as error:
+                    unsafe.append(str(error))
+                    continue
+                if kind == "dir":
+                    continue
+                member_count += 1
+                posix = relative.as_posix()
+                if not posix.startswith(prefix):
+                    unsafe.append(
+                        f"archive member escapes the {prefix!r} prefix: {posix}"
+                    )
+                    continue
+                archive_files.add(posix)
+                on_disk = eest_root / Path(*relative.parts)
+                if not on_disk.is_file():
+                    missing.append(posix)
+                    continue
+                source = archive.extractfile(member)
+                expected_digest = (
+                    sha256_stream(source) if source is not None else None
+                )
+                try:
+                    with on_disk.open("rb") as handle:
+                        actual_digest = sha256_stream(handle)
+                except OSError as error:
+                    changed.append(f"{posix} (unreadable: {error})")
+                    continue
+                if expected_digest != actual_digest:
+                    changed.append(posix)
+    except (tarfile.TarError, OSError) as error:
+        return [
+            Check(
+                "eest deep: archive read",
+                STATUS_FAIL,
+                f"could not stream {archive_path}: {error}",
+            )
+        ]
+
+    extra: list[str] = []
+    for path in fixtures_root.rglob("*"):
+        if path.is_dir():
+            continue
+        try:
+            relative_posix = path.relative_to(eest_root).as_posix()
+        except ValueError:
+            continue
+        if relative_posix not in archive_files:
+            extra.append(relative_posix)
+
+    if unsafe:
+        checks.append(
+            Check(
+                "eest deep: archive safety",
+                STATUS_FAIL,
+                f"{len(unsafe)} unsafe/misplaced member(s): "
+                + "; ".join(unsafe[:5]),
+            )
+        )
+    else:
+        checks.append(
+            Check(
+                "eest deep: archive safety",
+                STATUS_OK,
+                f"{member_count} regular file member(s), all safe",
+            )
+        )
+
+    disk_count = member_count - len(missing) + len(extra)
+    summary = (
+        f"{member_count} archive files; {len(missing)} missing, "
+        f"{len(changed)} changed, {len(extra)} extra "
+        f"({disk_count} files on disk)"
+    )
+    if missing or changed or extra:
+        detail_bits = []
+        if missing:
+            detail_bits.append(f"missing: {', '.join(missing[:5])}")
+        if changed:
+            detail_bits.append(f"changed: {', '.join(changed[:5])}")
+        if extra:
+            detail_bits.append(f"extra: {', '.join(extra[:5])}")
+        checks.append(
+            Check(
+                "eest deep: tree vs archive",
+                STATUS_FAIL,
+                summary + " — " + "; ".join(detail_bits),
+            )
+        )
+    else:
+        checks.append(Check("eest deep: tree vs archive", STATUS_OK, summary))
+
     return checks
 
 
@@ -476,6 +783,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="check only Git-backed legacy fixture sources; skip EEST and Python "
         "(the components deliberately not installed by bootstrap_legacy.py)",
     )
+    parser.add_argument(
+        "--eest-deep",
+        action="store_true",
+        help="additionally deep-verify the extracted EEST tree against the "
+        "release archive (hashes every file; slower but detects changed, "
+        "missing, and extra fixtures). Ignored with --legacy-only.",
+    )
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     return parser
 
@@ -512,6 +826,8 @@ def main(argv: list[str]) -> int:
     checks.extend(check_ethereum_tests(manifest, execution_specs_root))
     if not args.legacy_only:
         checks.extend(check_eest(manifest, eest_root))
+        if args.eest_deep:
+            checks.extend(deep_compare_eest(manifest, eest_root))
         checks.extend(check_python_oracle(manifest, venv_path))
 
     ok = all(check.status == STATUS_OK for check in checks)

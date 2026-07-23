@@ -28,6 +28,7 @@
     "default_subpath_from_home": "eest-fixtures",
     "fixtures_subpath": "fixtures",
     "_comment_env_var": "EEST_ROOT names the top-level install directory containing the archive and its extracted fixtures/ tree. It is distinct from scripts/check.sh's ELEVM_FIXTURES, which instead points directly at a tier's leaf fixture directory (and already defaults to <EEST_ROOT>/fixtures/blockchain_tests for --bls). The two variables are not interchangeable.",
+    "_comment_layout": "Every member of the archive is a regular file whose path begins with the fixtures_subpath prefix, so extracting into <EEST_ROOT> yields <EEST_ROOT>/fixtures/. The archive contains no directory, symlink, hardlink, or special members; the safe extractor and deep verifier reject anything else.",
     "expected_top_level_dirs": [
       "blockchain_tests",
       "blockchain_tests_engine",
@@ -38,7 +39,13 @@
     "bls_tier_subpaths": [
       "blockchain_tests/prague/eip2537_bls_12_381_precompiles",
       "blockchain_tests/cancun/eip4844_blobs"
-    ]
+    ],
+    "metadata_file_subpath": ".meta/fixtures.ini",
+    "metadata_expected": {
+      "ref": "refs/tags/tests-v5.4.0",
+      "build": "stable"
+    },
+    "_comment_metadata": "Release-identity fields recorded inside the archive's own .meta/fixtures.ini ([fixtures] section). Fast-mode verification confirms the extracted tree carries this exact provenance; the values are pinned here rather than derived from release_tag because the upstream git ref (tests-v5.4.0) differs from the release download tag (v5.4.0)."
   },
   "python_oracle": {
     "intended_version": "3.11.9",

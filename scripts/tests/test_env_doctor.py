@@ -13,6 +13,7 @@ import io
 import json
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -86,6 +87,11 @@ def make_manifest(path: Path, **overrides) -> dict:
             "default_subpath_from_home": "eest-fixtures",
             "fixtures_subpath": "fixtures",
             "expected_top_level_dirs": ["blockchain_tests", "state_tests"],
+            "bls_tier_subpaths": [
+                "blockchain_tests/prague/eip2537_bls_12_381_precompiles",
+            ],
+            "metadata_file_subpath": ".meta/fixtures.ini",
+            "metadata_expected": {"ref": "refs/tags/tests-v0", "build": "stable"},
         },
         "python_oracle": {
             "intended_version": "3.11.9",
@@ -322,6 +328,198 @@ class PythonOracleTests(unittest.TestCase):
             checks = env_doctor.check_python_oracle(manifest, venv)
             statuses = {c.name: c.status for c in checks}
             self.assertEqual(statuses["python-oracle: py-ecc"], env_doctor.STATUS_FAIL)
+
+
+_EEST_FILES = {
+    "fixtures/.meta/fixtures.ini": (
+        b"; provenance\n[fixtures]\nref = refs/tags/tests-v0\nbuild = stable\n"
+    ),
+    "fixtures/blockchain_tests/prague/eip2537_bls_12_381_precompiles/test_valid.json": (
+        b'{"valid": true}\n'
+    ),
+    "fixtures/state_tests/example/test_state.json": b"{}\n",
+}
+
+
+def build_eest_environment(root: Path) -> tuple[dict, Path]:
+    """Create a matching archive + extracted tree; return (manifest, eest_root)."""
+    eest_root = root / "eest-fixtures"
+    eest_root.mkdir(parents=True)
+    archive = eest_root / "fixtures.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        for name, data in _EEST_FILES.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            info.mtime = 0
+            tar.addfile(info, io.BytesIO(data))
+    sha = env_doctor.sha256_file(archive)
+    for name, data in _EEST_FILES.items():
+        target = eest_root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+
+    manifest = make_manifest(
+        root / "sources.json",
+        eest={
+            "release_tag": "v0",
+            "archive_url": "https://example.invalid/fixtures.tar.gz",
+            "archive_filename": "fixtures.tar.gz",
+            "archive_sha256": sha,
+            "default_env_var": "EEST_ROOT",
+            "default_subpath_from_home": "eest-fixtures",
+            "fixtures_subpath": "fixtures",
+            "expected_top_level_dirs": ["blockchain_tests", "state_tests"],
+            "bls_tier_subpaths": [
+                "blockchain_tests/prague/eip2537_bls_12_381_precompiles",
+            ],
+            "metadata_file_subpath": ".meta/fixtures.ini",
+            "metadata_expected": {"ref": "refs/tags/tests-v0", "build": "stable"},
+        },
+    )
+    return manifest, eest_root
+
+
+class EestFastMetadataTests(unittest.TestCase):
+    def _statuses(self, manifest, eest_root):
+        return {c.name: c.status for c in env_doctor.check_eest(manifest, eest_root)}
+
+    def test_metadata_and_bls_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            statuses = self._statuses(manifest, eest_root)
+            self.assertEqual(statuses["eest: fixture metadata"], env_doctor.STATUS_OK)
+            self.assertEqual(statuses["eest: bls tier fixtures"], env_doctor.STATUS_OK)
+
+    def test_metadata_mismatch_is_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            (eest_root / "fixtures/.meta/fixtures.ini").write_text(
+                "[fixtures]\nref = refs/tags/tampered\nbuild = stable\n"
+            )
+            statuses = self._statuses(manifest, eest_root)
+            self.assertEqual(statuses["eest: fixture metadata"], env_doctor.STATUS_FAIL)
+
+    def test_missing_metadata_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            (eest_root / "fixtures/.meta/fixtures.ini").unlink()
+            statuses = self._statuses(manifest, eest_root)
+            self.assertEqual(
+                statuses["eest: fixture metadata"], env_doctor.STATUS_MISSING
+            )
+
+    def test_missing_bls_dir_is_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            import shutil
+
+            shutil.rmtree(
+                eest_root
+                / "fixtures/blockchain_tests/prague/eip2537_bls_12_381_precompiles"
+            )
+            statuses = self._statuses(manifest, eest_root)
+            self.assertEqual(
+                statuses["eest: bls tier fixtures"], env_doctor.STATUS_FAIL
+            )
+
+    def test_minimal_manifest_skips_optional_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            del manifest["eest"]["bls_tier_subpaths"]
+            del manifest["eest"]["metadata_file_subpath"]
+            del manifest["eest"]["metadata_expected"]
+            names = {c.name for c in env_doctor.check_eest(manifest, eest_root)}
+            self.assertNotIn("eest: fixture metadata", names)
+            self.assertNotIn("eest: bls tier fixtures", names)
+
+
+class EestDeepCompareTests(unittest.TestCase):
+    def _statuses(self, manifest, eest_root):
+        return {c.name: c.status for c in env_doctor.deep_compare_eest(manifest, eest_root)}
+
+    def test_clean_tree_matches_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            checks = env_doctor.deep_compare_eest(manifest, eest_root)
+            self.assertTrue(all(c.status == env_doctor.STATUS_OK for c in checks), checks)
+
+    def test_changed_file_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            (eest_root / "fixtures/state_tests/example/test_state.json").write_bytes(
+                b'{"tampered": 1}\n'
+            )
+            statuses = self._statuses(manifest, eest_root)
+            self.assertEqual(
+                statuses["eest deep: tree vs archive"], env_doctor.STATUS_FAIL
+            )
+
+    def test_missing_file_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            (eest_root / "fixtures/state_tests/example/test_state.json").unlink()
+            statuses = self._statuses(manifest, eest_root)
+            self.assertEqual(
+                statuses["eest deep: tree vs archive"], env_doctor.STATUS_FAIL
+            )
+
+    def test_extra_file_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            (eest_root / "fixtures/state_tests/example/sneaky.json").write_bytes(b"{}\n")
+            statuses = self._statuses(manifest, eest_root)
+            self.assertEqual(
+                statuses["eest deep: tree vs archive"], env_doctor.STATUS_FAIL
+            )
+
+    def test_archive_hash_mismatch_refuses_deep(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            (eest_root / "fixtures.tar.gz").write_bytes(b"corrupted archive")
+            statuses = self._statuses(manifest, eest_root)
+            self.assertEqual(
+                statuses["eest deep: archive sha256"], env_doctor.STATUS_FAIL
+            )
+
+    def test_missing_archive_reports_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            (eest_root / "fixtures.tar.gz").unlink()
+            statuses = self._statuses(manifest, eest_root)
+            self.assertEqual(statuses["eest deep: archive"], env_doctor.STATUS_MISSING)
+
+    def test_deep_flag_wires_into_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest_path = Path(tmp) / "sources.json"
+            manifest, eest_root = build_eest_environment(Path(tmp))
+            # build_eest_environment already wrote the manifest to sources.json
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = env_doctor.main(
+                    [
+                        "--manifest",
+                        str(manifest_path),
+                        "--execution-specs",
+                        str(Path(tmp) / "no-execution-specs"),
+                        "--eest-root",
+                        str(eest_root),
+                        "--venv",
+                        str(Path(tmp) / "no-venv"),
+                        "--eest-deep",
+                        "--json",
+                    ]
+                )
+            payload = json.loads(buf.getvalue())
+            names = {c["name"] for c in payload["checks"]}
+            self.assertIn("eest deep: tree vs archive", names)
+            # rc is 1 only because the venv is deliberately absent here.
+            deep_ok = all(
+                c["status"] == "ok"
+                for c in payload["checks"]
+                if c["name"].startswith("eest deep:")
+            )
+            self.assertTrue(deep_ok)
+            self.assertEqual(rc, 1)
 
 
 class MainCliTests(unittest.TestCase):
