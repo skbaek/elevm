@@ -106,8 +106,12 @@ def base_manifest(archive_url: str, archive_sha: str) -> dict:
         },
         "python_oracle": {
             "intended_version": "3.11.9",
+            "patch_policy": "exact",
+            "package_manager": "uv",
+            "requirements_lock": "oracle/requirements.lock",
+            "requirements_lock_sha256": "0" * 64,
             "known_packages": {"py-ecc": "8.0.0", "coincurve": "20.0.0"},
-            "full_lock_status": "deferred_to_step_4",
+            "full_lock_status": "locked",
         },
     }
 

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Generate Elevm/BLSConst.lean from py_ecc's BLS12-381 constants.
 
-Run with the pinned EELS checkout's venv interpreter, which has py_ecc
-installed:
+Run with the frozen oracle venv associated with the configured EELS checkout:
 
-    ~/execution-specs/venv/bin/python scripts/gen-bls-consts.py \
-        --execution-specs ~/execution-specs > Elevm/BLSConst.lean
+    "$EELS_ROOT/venv/bin/python" scripts/gen-bls-consts.py \
+        --execution-specs "$EELS_ROOT" --output Elevm/BLSConst.lean
 
 Every constant needed by the EIP-2537 MAP precompiles (Step 7) is read
 directly from py_ecc.optimized_bls12_381 here and emitted as plain `Nat`
@@ -16,65 +15,29 @@ constant term first: `FQ2([c0, c1])` becomes the pair `(c0, c1)`.
 """
 
 import argparse
-import os
-import subprocess
 import sys
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
-PINNED_EXECUTION_SPECS_REV = "4198b9c5996713b268aed602739d5aa40e277694"
-PINNED_PY_ECC_VERSION = "8.0.0"
+import generator_common
 
 
 def parse_args():
-    default_root = Path(os.environ.get("EELS_ROOT", Path.home() / "execution-specs"))
     parser = argparse.ArgumentParser(description=__doc__)
+    generator_common.add_source_arguments(parser)
     parser.add_argument(
-        "--execution-specs",
+        "--output",
         type=Path,
-        default=default_root,
-        help="path to the pinned execution-specs checkout "
-        "(default: $EELS_ROOT or ~/execution-specs)",
+        default=None,
+        help="write generated Lean to this path instead of stdout",
     )
     return parser, parser.parse_args()
 
 
 parser, args = parse_args()
-execution_specs = args.execution_specs.expanduser().resolve()
-source_root = execution_specs / "src"
-if not (source_root / "ethereum" / "crypto" / "kzg.py").is_file():
-    parser.error(
-        f"{execution_specs} is not an execution-specs checkout containing "
-        "src/ethereum/crypto/kzg.py"
-    )
-
-try:
-    execution_specs_rev = subprocess.run(
-        ["git", "-C", str(execution_specs), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-except (OSError, subprocess.CalledProcessError) as error:
-    parser.error(f"could not read the execution-specs Git revision: {error}")
-if execution_specs_rev != PINNED_EXECUTION_SPECS_REV:
-    parser.error(
-        "execution-specs revision mismatch: expected "
-        f"{PINNED_EXECUTION_SPECS_REV}, got {execution_specs_rev}"
-    )
-
-try:
-    py_ecc_version = version("py-ecc")
-except PackageNotFoundError:
-    parser.error(
-        "py-ecc is not installed; run this script with the pinned "
-        "execution-specs checkout's venv interpreter"
-    )
-if py_ecc_version != PINNED_PY_ECC_VERSION:
-    parser.error(
-        f"py-ecc version mismatch: expected {PINNED_PY_ECC_VERSION}, "
-        f"got {py_ecc_version}"
-    )
+manifest, execution_specs, source_root = generator_common.load_generator_source(
+    parser, args.manifest, args.execution_specs
+)
+generator_common.require_known_packages(parser, manifest)
 
 sys.path.insert(0, str(source_root))
 
@@ -189,4 +152,9 @@ w(
 w("")
 w("end BLSConst")
 
-sys.stdout.write("\n".join(out) + "\n")
+generated = "\n".join(out) + "\n"
+if args.output is None:
+    sys.stdout.write(generated)
+else:
+    args.output.write_text(generated)
+    print(f"wrote BLS constants to {args.output}", file=sys.stderr)

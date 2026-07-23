@@ -9,6 +9,7 @@ Run with: python3 -m unittest discover -s scripts/tests
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import subprocess
@@ -55,12 +56,27 @@ def make_fake_venv(root: Path, version: str, packages: dict) -> None:
     bin_dir = root / "bin"
     bin_dir.mkdir(parents=True)
     python_path = bin_dir / "python"
-    payload = json.dumps({"python_version": version, "packages": packages})
+    payload = json.dumps(
+        {
+            "python_version": version,
+            "packages": packages,
+            "imports": {"coincurve": None, "Crypto": None, "py_ecc": None},
+        }
+    )
     python_path.write_text(f"#!/bin/sh\ncat <<'EOF'\n{payload}\nEOF\n")
     python_path.chmod(0o755)
 
 
 def make_manifest(path: Path, **overrides) -> dict:
+    lock_path = path.parent / "oracle" / "requirements.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path.write_text(
+        "coincurve==20.0.0 \\\n"
+        "    --hash=sha256:" + "1" * 64 + "\n"
+        "py-ecc==8.0.0 \\\n"
+        "    --hash=sha256:" + "2" * 64 + "\n"
+    )
+    lock_hash = hashlib.sha256(lock_path.read_bytes()).hexdigest()
     data = {
         "schema_version": 1,
         "execution_specs": {
@@ -95,8 +111,14 @@ def make_manifest(path: Path, **overrides) -> dict:
         },
         "python_oracle": {
             "intended_version": "3.11.9",
+            "patch_policy": "exact",
+            "package_manager": "uv",
+            "package_manager_tested_version": "0.11.3",
+            "requirements_input": "oracle/requirements.in",
+            "requirements_lock": "oracle/requirements.lock",
+            "requirements_lock_sha256": lock_hash,
             "known_packages": {"py-ecc": "8.0.0", "coincurve": "20.0.0"},
-            "full_lock_status": "deferred_to_step_4",
+            "full_lock_status": "locked",
         },
     }
     data.update(overrides)
@@ -287,16 +309,21 @@ class EestChecksTests(unittest.TestCase):
 class PythonOracleTests(unittest.TestCase):
     def test_missing_venv(self):
         with tempfile.TemporaryDirectory() as tmp:
-            manifest = make_manifest(Path(tmp) / "m.json")
-            checks = env_doctor.check_python_oracle(manifest, Path(tmp) / "nope")
-            self.assertEqual(checks[0].status, env_doctor.STATUS_MISSING)
+            manifest_path = Path(tmp) / "m.json"
+            manifest = make_manifest(manifest_path)
+            checks = env_doctor.check_python_oracle(
+                manifest, Path(tmp) / "nope", manifest_path
+            )
+            statuses = {c.name: c.status for c in checks}
+            self.assertEqual(statuses["python-oracle: venv"], env_doctor.STATUS_MISSING)
 
     def test_matching_version_and_packages(self):
         with tempfile.TemporaryDirectory() as tmp:
             venv = Path(tmp) / "venv"
             make_fake_venv(venv, "3.11.9", {"py-ecc": "8.0.0", "coincurve": "20.0.0"})
-            manifest = make_manifest(Path(tmp) / "m.json")
-            checks = env_doctor.check_python_oracle(manifest, venv)
+            manifest_path = Path(tmp) / "m.json"
+            manifest = make_manifest(manifest_path)
+            checks = env_doctor.check_python_oracle(manifest, venv, manifest_path)
             statuses = {c.name: c.status for c in checks}
             self.assertEqual(statuses["python-oracle: version"], env_doctor.STATUS_OK)
             self.assertEqual(statuses["python-oracle: py-ecc"], env_doctor.STATUS_OK)
@@ -306,8 +333,9 @@ class PythonOracleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             venv = Path(tmp) / "venv"
             make_fake_venv(venv, "3.12.0", {"py-ecc": "8.0.0", "coincurve": "20.0.0"})
-            manifest = make_manifest(Path(tmp) / "m.json")
-            checks = env_doctor.check_python_oracle(manifest, venv)
+            manifest_path = Path(tmp) / "m.json"
+            manifest = make_manifest(manifest_path)
+            checks = env_doctor.check_python_oracle(manifest, venv, manifest_path)
             statuses = {c.name: c.status for c in checks}
             self.assertEqual(statuses["python-oracle: version"], env_doctor.STATUS_FAIL)
 
@@ -315,8 +343,9 @@ class PythonOracleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             venv = Path(tmp) / "venv"
             make_fake_venv(venv, "3.11.9", {"py-ecc": None, "coincurve": "20.0.0"})
-            manifest = make_manifest(Path(tmp) / "m.json")
-            checks = env_doctor.check_python_oracle(manifest, venv)
+            manifest_path = Path(tmp) / "m.json"
+            manifest = make_manifest(manifest_path)
+            checks = env_doctor.check_python_oracle(manifest, venv, manifest_path)
             statuses = {c.name: c.status for c in checks}
             self.assertEqual(statuses["python-oracle: py-ecc"], env_doctor.STATUS_MISSING)
 
@@ -324,8 +353,9 @@ class PythonOracleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             venv = Path(tmp) / "venv"
             make_fake_venv(venv, "3.11.9", {"py-ecc": "7.0.0", "coincurve": "20.0.0"})
-            manifest = make_manifest(Path(tmp) / "m.json")
-            checks = env_doctor.check_python_oracle(manifest, venv)
+            manifest_path = Path(tmp) / "m.json"
+            manifest = make_manifest(manifest_path)
+            checks = env_doctor.check_python_oracle(manifest, venv, manifest_path)
             statuses = {c.name: c.status for c in checks}
             self.assertEqual(statuses["python-oracle: py-ecc"], env_doctor.STATUS_FAIL)
 

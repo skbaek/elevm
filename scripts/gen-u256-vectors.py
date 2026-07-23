@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Generate the Step-1 EVM-word differential oracle.
 
-The formulas below were re-derived from the local Prague EELS sources:
+The formulas below were re-derived from the manifest-pinned Prague EELS sources:
 ``vm/instructions/{arithmetic,comparison,bitwise,keccak}.py`` and
-``vm/gas.py``.  This file deliberately uses only Python's standard library.
+``vm/gas.py``.  The generator validates that checkout before writing output.
 """
-import json, random, subprocess
+import argparse
+import json
+import random
 from pathlib import Path
+
+import generator_common
 
 W = 256
 MOD = 1 << W
 MASK = MOD - 1
 SEED = 0xE1E5_2026_0719
 ROOT = Path(__file__).resolve().parents[1]
-EELS = Path.home() / "execution-specs"
 
 def h(x): return f"0x{x & MASK:064x}"
 def signed(x): return x - MOD if x >= (1 << 255) else x
@@ -35,8 +38,24 @@ def sar(k, x):
 def byte(k, x): return 0 if k >= 32 else (x >> (8 * (31 - k))) & 0xff
 def bytecount(x): return (x.bit_length() + 7) // 8
 
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    generator_common.add_source_arguments(parser)
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=ROOT / "scripts" / "vectors" / "u256.json",
+        help="output JSON path (default: scripts/vectors/u256.json)",
+    )
+    return parser, parser.parse_args()
+
+
 def main():
-    revision = subprocess.check_output(["git", "-C", str(EELS), "rev-parse", "HEAD"], text=True).strip()
+    parser, args = parse_args()
+    manifest, _, _ = generator_common.load_generator_source(
+        parser, args.manifest, args.execution_specs
+    )
+    revision = manifest["execution_specs"]["commit"]
     rng = random.Random(SEED)
     limb_edges = [v << shift for shift in (0, 64, 128, 192)
                   for v in ((1 << 64) - 1, 1 << 64, (1 << 64) + 1)]
@@ -81,7 +100,7 @@ def main():
     out = {"header": {"eels_revision": revision, "seed": SEED,
                       "sources": ["arithmetic.py", "comparison.py", "bitwise.py", "keccak.py", "gas.py"]},
            "vectors": vs}
-    path = ROOT / "scripts" / "vectors" / "u256.json"
+    path = args.output
     path.write_text(json.dumps(out, indent=2) + "\n")
     print(f"wrote {len(vs)} vectors to {path}")
 

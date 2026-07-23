@@ -153,6 +153,58 @@ The four committed `*.head.json` files contain the first 32 entries of their
 full upstream vectors. Regenerate them with the committed `jq '.[0:32]'`
 commands in `scripts/check-vectors.sh`; do not hand-edit them.
 
+## Frozen Python oracle environment
+
+[`scripts/oracle/requirements.in`](../oracle/requirements.in) records the
+complete 18-package runtime closure observed in the known-good oracle, and
+[`scripts/oracle/requirements.lock`](../oracle/requirements.lock) is uv's
+transitive lock with exact versions and package-distribution SHA-256 hashes.
+The lock deliberately contains no editable or local-path
+`ethereum-execution` entry. Both generators instead validate and import the
+checkout pinned independently by `scripts/sources.json`.
+
+Python **3.11.9 is exact** for this environment. A different patch release is
+a failure rather than a warning because the oracle includes native extension
+wheels and generated artifacts are accepted only from the interpreter/package
+closure actually tested. This is stricter than execution-specs' general
+`>=3.11` package metadata on purpose.
+
+Create the environment after the execution-specs bootstrap:
+
+```sh
+EELS_ROOT="$HOME/execution-specs"
+python3 scripts/bootstrap_oracle.py --execution-specs "$EELS_ROOT" --dry-run
+python3 scripts/bootstrap_oracle.py --execution-specs "$EELS_ROOT"
+python3 scripts/env_doctor.py --execution-specs "$EELS_ROOT" \
+  --venv "$EELS_ROOT/venv"
+```
+
+`--execution-specs` takes precedence over `EELS_ROOT`, and `--venv` can select
+a path containing spaces. The default venv remains
+`<execution-specs>/venv`. A correct existing venv is a no-op. An existing venv
+with the wrong interpreter, a missing/wrong/extra package, or a broken native
+import is refused without mutation; inspect it and manually move/remove it
+only if it is disposable, or choose another `--venv`.
+
+The bootstrap builds a relocatable temporary sibling, syncs only the frozen
+lock with required hashes, verifies it, and atomically places it. Inspect any
+leftover `.venv.bootstrap-*` directory after interruption. Use `--offline` to
+forbid all Python and package downloads; it succeeds only when uv already has
+Python 3.11.9 and every locked artifact cached, and otherwise explains how to
+prefill the cache or rerun with network access.
+
+To audit or refresh the lock after an intentional source/version review:
+
+```sh
+uv pip compile --python 3.11.9 --python-version 3.11.9 --generate-hashes \
+  scripts/oracle/requirements.in \
+  --output-file scripts/oracle/requirements.lock
+```
+
+Any changed resolved version, changed generator bytes, local-path entry, or
+need to loosen the execution-specs pin requires review rather than silently
+updating the manifest's recorded lock hash.
+
 ## BLS constants generator
 
 `Elevm/BLSConst.lean` is generated from the following pinned local sources:
@@ -162,20 +214,38 @@ commands in `scripts/check-vectors.sh`; do not hand-edit them.
 - `py-ecc` version `8.0.0`, installed in that checkout's venv
 
 The generator does not clone repositories or install dependencies. Point it at
-an existing checkout; it verifies both pins before producing output:
+an existing checkout; it reads both pins from the shared manifest before
+producing output:
 
 ```sh
-~/execution-specs/venv/bin/python scripts/gen-bls-consts.py \
-  --execution-specs ~/execution-specs > Elevm/BLSConst.lean
+EELS_ROOT="$HOME/execution-specs"
+"$EELS_ROOT/venv/bin/python" scripts/gen-bls-consts.py \
+  --execution-specs "$EELS_ROOT" --output Elevm/BLSConst.lean
 ```
 
 `EELS_ROOT` may be used instead of the command-line option. To verify the
 committed constants without replacing them:
 
 ```sh
-~/execution-specs/venv/bin/python scripts/gen-bls-consts.py \
-  --execution-specs ~/execution-specs > /tmp/BLSConst.lean
+"$EELS_ROOT/venv/bin/python" scripts/gen-bls-consts.py \
+  --execution-specs "$EELS_ROOT" --output /tmp/BLSConst.lean
 cmp /tmp/BLSConst.lean Elevm/BLSConst.lean
+```
+
+## U256 differential vectors
+
+`scripts/gen-u256-vectors.py` uses only the standard library for its formulas,
+but it now enforces the same manifest-pinned checkout and expected Prague
+source layout as the BLS generator. The explicit path wins over `EELS_ROOT`;
+neither script embeds a home-directory username.
+
+Generate to a disposable output and compare without touching the committed
+artifact:
+
+```sh
+"$EELS_ROOT/venv/bin/python" scripts/gen-u256-vectors.py \
+  --execution-specs "$EELS_ROOT" --output /tmp/u256.json
+cmp /tmp/u256.json scripts/vectors/u256.json
 ```
 
 ## EIP-2537 vectors

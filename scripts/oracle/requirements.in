@@ -1,0 +1,29 @@
+# Runtime dependency closure of the pinned execution-specs checkout used by
+# ELEVM's deterministic generators.  Every package is fixed to the version
+# observed in the known-good Python 3.11.9 environment; listing the complete
+# closure here prevents a later resolver run from silently selecting newer
+# transitive packages.  Generate the complete hashed lock with:
+#
+#   uv pip compile --python 3.11.9 --python-version 3.11.9 --generate-hashes \
+#     scripts/oracle/requirements.in --output-file scripts/oracle/requirements.lock
+#
+# The execution-specs checkout itself is deliberately not a local-path
+# requirement.  Generators import it from the manifest-pinned checkout.
+annotated-types==0.7.0
+asn1crypto==1.5.1
+cffi==2.0.0
+coincurve==20.0.0
+cytoolz==1.1.0
+eth-hash==0.8.0
+eth-typing==6.0.0
+eth-utils==6.0.0
+ethereum-rlp==0.1.5
+ethereum-types==0.2.5
+py-ecc==8.0.0
+pycparser==3.0
+pycryptodome==3.23.0
+pydantic==2.12.5
+pydantic-core==2.41.5
+toolz==1.1.0
+typing-extensions==4.15.0
+typing-inspection==0.4.2

@@ -12,7 +12,9 @@ against the extracted tree to detect changed, missing, or extra fixtures.
 This script never edits, fetches, clones, initializes, activates, or repairs
 anything. It only reads. scripts/bootstrap_legacy.py can create a missing
 Git-backed legacy-fixture installation and scripts/bootstrap_eest.py can create
-a missing EEST installation; both refuse to repair an existing one.
+a missing EEST installation. scripts/bootstrap_oracle.py can create the exact
+Python 3.11.9 hash-locked oracle venv. All refuse to repair an existing
+non-matching destination.
 
 Python-standard-library only.
 
@@ -28,6 +30,7 @@ import configparser
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -91,7 +94,15 @@ def load_manifest(path: Path) -> dict:
             "fixtures_subpath",
             "expected_top_level_dirs",
         ),
-        "python_oracle": ("intended_version", "known_packages"),
+        "python_oracle": (
+            "intended_version",
+            "patch_policy",
+            "package_manager",
+            "requirements_lock",
+            "requirements_lock_sha256",
+            "known_packages",
+            "full_lock_status",
+        ),
     }
     for section, fields in required_fields.items():
         if not isinstance(data[section], dict):
@@ -108,6 +119,70 @@ def load_manifest(path: Path) -> dict:
 
 class ManifestError(Exception):
     pass
+
+
+_LOCKED_REQUIREMENT = re.compile(
+    r"^([A-Za-z0-9][A-Za-z0-9_.-]*)==([^;\\\s]+)\s*\\?\s*$"
+)
+
+
+def normalize_package_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def oracle_lock_path(manifest: dict, manifest_path: Path) -> Path:
+    value = manifest["python_oracle"]["requirements_lock"]
+    if not isinstance(value, str) or not value:
+        raise ManifestError(
+            "manifest field python_oracle.requirements_lock must be a nonempty "
+            "path relative to the manifest"
+        )
+    pure = PurePosixPath(value)
+    if pure.is_absolute() or any(part in ("", ".", "..") for part in pure.parts):
+        raise ManifestError(
+            "manifest field python_oracle.requirements_lock must be a safe "
+            f"relative path, got {value!r}"
+        )
+    return manifest_path.resolve().parent.joinpath(*pure.parts)
+
+
+def parse_requirements_lock(path: Path) -> dict[str, str]:
+    """Parse uv's exact, hash-locked requirements output."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError as error:
+        raise ManifestError(f"cannot read Python requirements lock {path}: {error}") from error
+
+    packages: dict[str, str] = {}
+    current_name: str | None = None
+    current_has_hash = False
+
+    def finish_current() -> None:
+        if current_name is not None and not current_has_hash:
+            raise ManifestError(
+                f"Python requirements lock entry {current_name!r} has no SHA-256 hash"
+            )
+
+    for line in lines:
+        match = _LOCKED_REQUIREMENT.match(line)
+        if match:
+            finish_current()
+            raw_name, package_version = match.groups()
+            package_name = normalize_package_name(raw_name)
+            if package_name in packages:
+                raise ManifestError(
+                    f"Python requirements lock contains duplicate package {package_name!r}"
+                )
+            packages[package_name] = package_version
+            current_name = package_name
+            current_has_hash = False
+        elif current_name is not None and "--hash=sha256:" in line:
+            current_has_hash = True
+
+    finish_current()
+    if not packages:
+        raise ManifestError(f"Python requirements lock {path} contains no exact packages")
+    return packages
 
 
 def run_git(args: list[str], cwd: Path) -> Optional[str]:
@@ -655,9 +730,67 @@ def deep_compare_eest(manifest: dict, eest_root: Path) -> list[Check]:
     return checks
 
 
-def check_python_oracle(manifest: dict, venv_path: Path) -> list[Check]:
+def check_python_oracle(
+    manifest: dict, venv_path: Path, manifest_path: Path = DEFAULT_MANIFEST
+) -> list[Check]:
     spec = manifest["python_oracle"]
     checks: list[Check] = []
+
+    try:
+        lock_path = oracle_lock_path(manifest, manifest_path)
+    except ManifestError as error:
+        checks.append(Check("python-oracle: lock path", STATUS_FAIL, str(error)))
+        return checks
+    if not lock_path.is_file():
+        checks.append(
+            Check("python-oracle: lock", STATUS_MISSING, f"not found: {lock_path}")
+        )
+        return checks
+
+    actual_lock_hash = sha256_file(lock_path)
+    expected_lock_hash = spec["requirements_lock_sha256"]
+    if actual_lock_hash != expected_lock_hash:
+        checks.append(
+            Check(
+                "python-oracle: lock hash",
+                STATUS_FAIL,
+                f"expected {expected_lock_hash}, got {actual_lock_hash}",
+            )
+        )
+        return checks
+    checks.append(Check("python-oracle: lock hash", STATUS_OK, actual_lock_hash))
+
+    try:
+        locked_packages = parse_requirements_lock(lock_path)
+    except ManifestError as error:
+        checks.append(Check("python-oracle: lock contents", STATUS_FAIL, str(error)))
+        return checks
+
+    known_packages = {
+        normalize_package_name(name): package_version
+        for name, package_version in spec["known_packages"].items()
+    }
+    inconsistent = [
+        f"{name}: manifest {package_version}, lock {locked_packages.get(name, 'missing')}"
+        for name, package_version in known_packages.items()
+        if locked_packages.get(name) != package_version
+    ]
+    if inconsistent:
+        checks.append(
+            Check(
+                "python-oracle: lock contents",
+                STATUS_FAIL,
+                "known-package mismatch — " + "; ".join(inconsistent),
+            )
+        )
+        return checks
+    checks.append(
+        Check(
+            "python-oracle: lock contents",
+            STATUS_OK,
+            f"{len(locked_packages)} exact package(s), each with SHA-256 hashes",
+        )
+    )
 
     python_bin = venv_path / "bin" / "python"
     if not python_bin.is_file():
@@ -669,15 +802,21 @@ def check_python_oracle(manifest: dict, venv_path: Path) -> list[Check]:
 
     probe = (
         "import json, sys\n"
-        "from importlib.metadata import PackageNotFoundError, version\n"
+        "from importlib.metadata import distributions\n"
         "info = {'python_version': '%d.%d.%d' % sys.version_info[:3]}\n"
-        "packages = {}\n"
-        f"for name in {list(spec['known_packages'].keys())!r}:\n"
-        "    try:\n"
-        "        packages[name] = version(name)\n"
-        "    except PackageNotFoundError:\n"
-        "        packages[name] = None\n"
+        "def norm(name):\n"
+        "    import re\n"
+        "    return re.sub(r'[-_.]+', '-', name).lower()\n"
+        "packages = {norm(d.metadata['Name']): d.version for d in distributions()}\n"
         "info['packages'] = packages\n"
+        "imports = {}\n"
+        "for module in ('coincurve', 'Crypto', 'py_ecc'):\n"
+        "    try:\n"
+        "        __import__(module)\n"
+        "        imports[module] = None\n"
+        "    except Exception as error:\n"
+        "        imports[module] = '%s: %s' % (type(error).__name__, error)\n"
+        "info['imports'] = imports\n"
         "print(json.dumps(info))\n"
     )
     try:
@@ -721,8 +860,9 @@ def check_python_oracle(manifest: dict, venv_path: Path) -> list[Check]:
     else:
         checks.append(Check("python-oracle: version", STATUS_OK, actual_version))
 
-    for name, expected_version in spec["known_packages"].items():
-        actual = info["packages"].get(name)
+    actual_packages = info["packages"]
+    for name, expected_version in locked_packages.items():
+        actual = actual_packages.get(name)
         if actual is None:
             checks.append(Check(f"python-oracle: {name}", STATUS_MISSING, "not installed"))
         elif actual != expected_version:
@@ -735,6 +875,37 @@ def check_python_oracle(manifest: dict, venv_path: Path) -> list[Check]:
             )
         else:
             checks.append(Check(f"python-oracle: {name}", STATUS_OK, actual))
+
+    extras = sorted(set(actual_packages) - set(locked_packages))
+    if extras:
+        checks.append(
+            Check(
+                "python-oracle: extra packages",
+                STATUS_FAIL,
+                f"{len(extras)} package(s) not in the frozen lock: "
+                + ", ".join(extras[:10]),
+            )
+        )
+    else:
+        checks.append(Check("python-oracle: extra packages", STATUS_OK, "none"))
+
+    import_errors = {
+        module: detail for module, detail in info.get("imports", {}).items() if detail
+    }
+    if import_errors:
+        checks.append(
+            Check(
+                "python-oracle: imports",
+                STATUS_FAIL,
+                "; ".join(
+                    f"{module}: {detail}" for module, detail in import_errors.items()
+                ),
+            )
+        )
+    else:
+        checks.append(
+            Check("python-oracle: imports", STATUS_OK, "coincurve, Crypto, py_ecc")
+        )
 
     return checks
 
@@ -828,7 +999,7 @@ def main(argv: list[str]) -> int:
         checks.extend(check_eest(manifest, eest_root))
         if args.eest_deep:
             checks.extend(deep_compare_eest(manifest, eest_root))
-        checks.extend(check_python_oracle(manifest, venv_path))
+        checks.extend(check_python_oracle(manifest, venv_path, args.manifest))
 
     ok = all(check.status == STATUS_OK for check in checks)
 
