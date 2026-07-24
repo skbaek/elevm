@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Source-hygiene gate for elevm (CI lint tier).
+#
+# Fails if any forbidden pattern appears under Elevm/ that is not recorded in
+# the committed allowlist scripts/hygiene-allow.txt. Forbidden patterns:
+#
+#   dbg_trace   stray debug tracing left on a code path
+#   sorry       an incomplete proof / axiomatized hole
+#
+# The gate is fail-closed: every currently-committed occurrence must be either
+# removed from the source or listed in the allowlist with a written
+# justification, and any NEW occurrence fails the gate. This needs no Lean
+# toolchain, so CI runs it on a bare runner.
+#
+# Matching is line-number independent. Each occurrence is normalised to
+#   <relpath> <source line, leading/trailing space trimmed, runs collapsed>
+# and compared as a whole line against the allowlist. That survives edits above
+# the line, but forces re-review if the matched text itself changes. Paths
+# under Elevm/ contain no spaces, so the single-space join is unambiguous.
+#
+# Usage: scripts/check-hygiene.sh
+#
+# CLI contract: exit 0 iff no un-allowlisted occurrence exists; the last line
+# of output is a single unambiguous verdict. Exit 1 on a violation, 2 on a
+# usage or setup error. A stale allowlist entry (listed but no longer present
+# in the source) is reported as a warning, never a failure.
+
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$SCRIPT_DIR")"
+SRC_DIR="Elevm"
+ALLOW="$SCRIPT_DIR/hygiene-allow.txt"
+PATTERN='dbg_trace|\bsorry\b'
+
+if [ $# -ne 0 ]; then
+  echo "usage: scripts/check-hygiene.sh" >&2
+  exit 2
+fi
+if [ ! -d "$ROOT/$SRC_DIR" ]; then
+  echo "REGRESSION — hygiene: source tree not found: $ROOT/$SRC_DIR"
+  exit 2
+fi
+
+normalise() { sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/[[:space:]]+/ /g'; }
+
+# Current occurrences, normalised to "<relpath> <collapsed source line>".
+HITS="$(cd "$ROOT" && grep -rEn "$PATTERN" "$SRC_DIR" --include='*.lean' 2>/dev/null \
+  | awk '{
+      path = $0; sub(/:[0-9]+:.*$/, "", path)
+      line = $0; sub(/^[^:]+:[0-9]+:/, "", line)
+      print path "\t" line
+    }' \
+  | awk -F'\t' '{
+      c = $2
+      gsub(/^[ \t]+|[ \t]+$/, "", c); gsub(/[ \t]+/, " ", c)
+      print $1 " " c
+    }' \
+  | sort -u)"
+
+# Allowlist data lines (drop comments / blanks), normalised identically so
+# authoring is forgiving about incidental whitespace.
+ALLOWED=""
+if [ -f "$ALLOW" ]; then
+  ALLOWED="$(grep -vE '^[[:space:]]*(#|$)' "$ALLOW" | normalise | sort -u)"
+fi
+
+VIOLATIONS="$(comm -23 <(printf '%s\n' "$HITS" | grep -v '^$' | sort -u) \
+                        <(printf '%s\n' "$ALLOWED" | grep -v '^$' | sort -u))"
+STALE="$(comm -13 <(printf '%s\n' "$HITS" | grep -v '^$' | sort -u) \
+                   <(printf '%s\n' "$ALLOWED" | grep -v '^$' | sort -u))"
+
+if [ -n "$STALE" ]; then
+  printf '%s\n' "$STALE" | while IFS= read -r s; do
+    [ -n "$s" ] && echo "WARNING — hygiene: stale allowlist entry no longer in source: $s"
+  done
+fi
+
+NHITS="$(printf '%s\n' "$HITS" | grep -c .)"
+if [ -n "$VIOLATIONS" ]; then
+  printf '%s\n' "$VIOLATIONS" | while IFS= read -r v; do
+    [ -n "$v" ] && echo "HYGIENE — un-allowlisted occurrence: $v"
+  done
+  NVIO="$(printf '%s\n' "$VIOLATIONS" | grep -c .)"
+  echo "REGRESSION — hygiene: $NVIO forbidden occurrence(s) under $SRC_DIR/ not in $(basename "$ALLOW"); remove them or add a justified allowlist entry"
+  exit 1
+fi
+
+echo "OK — hygiene: all $NHITS occurrence(s) of {dbg_trace, sorry} under $SRC_DIR/ are allowlisted; no new ones"
+exit 0

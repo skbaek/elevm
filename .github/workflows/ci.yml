@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+# One in-flight run per ref: a newer push cancels the older run instead of
+# stacking a second 30-minute build on a commit that has been superseded.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # This repository intentionally follows maintained major-version action tags
 # rather than commit SHAs. Review upstream release notes before changing a tag;
 # keep this policy consistent across ELEVM workflows.
@@ -25,6 +31,18 @@ jobs:
           python-version: "3.11"
       - name: Run portable-environment unit tests
         run: python3 -m unittest discover -s scripts/tests
+
+  hygiene:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v6
+      # No Lean toolchain needed — a fail-closed grep gate against a committed
+      # allowlist (scripts/hygiene-allow.txt) so no new dbg_trace / sorry can
+      # enter Elevm/ unnoticed.
+      - name: Source-hygiene gate (no stray dbg_trace / sorry under Elevm/)
+        run: scripts/check-hygiene.sh
 
   build:
     runs-on: ubuntu-24.04

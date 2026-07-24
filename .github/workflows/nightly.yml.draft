@@ -1,0 +1,84 @@
+# ============================================================================
+# DRAFT — NOT ACTIVE (.yml.draft is ignored by GitHub Actions). Review-ready
+# draft of the nightly heavy-conformance workflow (CI plan P2): the full legacy
+# tier (~56 min reference) and the EEST bls tier, kept OUT of the per-push loop
+# so pushes stay minutes-scale.
+#
+# UNVERIFIED. Activate with `git mv nightly.yml.draft nightly.yml`, then trigger
+# via workflow_dispatch and confirm green with artifacts + summary. IMPORTANT:
+# the first --full run on hosted hardware is the first time the 2983-file corpus
+# is classified off the author's machine. If it surfaces baseline drift, report
+# every CHANGE line verbatim and STOP — do not rebaseline to go green.
+#
+# Verify-on-first-run: both corpora provision + cache; --full wall time vs the
+# 360 min hosted ceiling (if close, shard the file list per the CI plan);
+# reports upload even when a tier flags drift.
+# ============================================================================
+name: nightly
+
+on:
+  schedule:
+    - cron: "0 7 * * *"   # 07:00 UTC daily (low contention); adjust as desired
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false   # let an in-flight nightly finish
+
+env:
+  EELS_ROOT: ${{ github.workspace }}/.fixtures/execution-specs
+  EEST_ROOT: ${{ github.workspace }}/.fixtures/eest
+
+jobs:
+  full-and-bls:
+    runs-on: ubuntu-24.04
+    # Basis: ~56 min --full + ~8 min --bls reference, slower on hosted runners,
+    # plus build + provisioning. Hosted-runner job ceiling is 360 min.
+    timeout-minutes: 300
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: leanprover/lean-action@v1
+
+      - name: Cache legacy fixture corpus
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.EELS_ROOT }}
+          key: legacy-fixtures-${{ hashFiles('scripts/sources.json') }}
+      - name: Cache EEST fixture corpus
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.EEST_ROOT }}
+          key: eest-fixtures-${{ hashFiles('scripts/sources.json') }}
+
+      - name: Provision legacy fixtures
+        run: python3 scripts/bootstrap_legacy.py --execution-specs "$EELS_ROOT"
+      - name: Provision EEST fixtures
+        run: python3 scripts/bootstrap_eest.py --eest-root "$EEST_ROOT"
+
+      - name: Full conformance tier (check.sh --full)
+        run: |
+          ELEVM_FIXTURES="$EELS_ROOT/tests/fixtures/ethereum_tests/BlockchainTests" \
+            scripts/check.sh --full --no-build
+      # Run bls even if --full flagged drift, so both reports always exist.
+      - name: BLS / point-evaluation tier (check.sh --bls)
+        if: always()
+        run: |
+          ELEVM_FIXTURES="$EEST_ROOT/fixtures/blockchain_tests" \
+            scripts/check.sh --bls --no-build
+
+      - name: Upload tier reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-reports
+          path: |
+            scripts/report-full.txt
+            scripts/report-bls.txt
+          if-no-files-found: warn
