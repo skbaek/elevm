@@ -129,9 +129,12 @@ def B8L.ripemd160 : B8L → B8L := ripemd160.run
 
 namespace SHA256
 
-def initChunk : B32A :=
-  #[ 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-     0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 ]
+-- The eight-word initial state, length-indexed so the whole SHA-256 state is
+-- statically an eight-word `Vector`. That makes the finaliser's projection
+-- total (see `run`): there is no "wrong number of words" case to fall back on.
+def initChunk : Vector B32 8 :=
+  ⟨#[ 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+      0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 ], rfl⟩
 
 def B8L.toChunks (lenB8L : B8L) : Nat → B8L → Nat → List B8A
   | 0, _, _ => []
@@ -202,21 +205,21 @@ def rounds (p : B8A) :
     let temp2 : B32 := s0 + maj
     rounds p n w' (temp1 + temp2) a b c (d + temp1) e f g
 
-def consumeChunk (h : B32A) (p : B8A) : B32A :=
+def consumeChunk (h : Vector B32 8) (p : B8A) : Vector B32 8 :=
   let h' : B32A :=
     rounds p 64 (Array.replicate 16 0)
-      h[0]! h[1]! h[2]! h[3]! h[4]! h[5]! h[6]! h[7]!
+      h[0] h[1] h[2] h[3] h[4] h[5] h[6] h[7]
   ⟨
-    [
-      h[0]! + h'[0]!,
-      h[1]! + h'[1]!,
-      h[2]! + h'[2]!,
-      h[3]! + h'[3]!,
-      h[4]! + h'[4]!,
-      h[5]! + h'[5]!,
-      h[6]! + h'[6]!,
-      h[7]! + h'[7]!
-    ]
+    #[
+      h[0] + h'[0]!,
+      h[1] + h'[1]!,
+      h[2] + h'[2]!,
+      h[3] + h'[3]!,
+      h[4] + h'[4]!,
+      h[5] + h'[5]!,
+      h[6] + h'[6]!,
+      h[7] + h'[7]!
+    ], rfl
   ⟩
 
 def run (data : B8L) : B256 :=
@@ -228,11 +231,11 @@ def run (data : B8L) : B256 :=
       (len / 64).succ
       data
       len
-  let hash := List.foldl consumeChunk initChunk xss
-  match hash with
-  | ⟨[x0, x1, x2, x3, y0, y1, y2, y3]⟩ =>
-    B32s.toB256 x0 x1 x2 x3 y0 y1 y2 y3
-  | _ => (dbg_trace "incorrect number of 32-bit numbers in hash"; 0)
+  -- `hash` is length-indexed at 8, so the eight projections below are total:
+  -- the earlier "wrong number of 32-bit words" fallback is now unreachable by
+  -- construction and has been removed rather than masked by a trace.
+  let hash : Vector B32 8 := List.foldl consumeChunk initChunk xss
+  B32s.toB256 hash[0] hash[1] hash[2] hash[3] hash[4] hash[5] hash[6] hash[7]
 
 end SHA256
 

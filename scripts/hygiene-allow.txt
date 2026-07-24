@@ -15,15 +15,6 @@
 # both occurrences (Basic.lean:1786 in cprint, Basic.lean:1789 in Except.print).
 Elevm/Basic.lean dbg_trace msg
 
-# FINDING — flagged, NOT blessed; allowlisted only to keep the gate green while
-# a proper fix is tracked separately. Defensive fallback on a
-# should-be-unreachable branch of the SHA-256 finaliser: it returns a zero hash
-# and announces the impossibility only via dbg_trace (invisible in normal
-# operation). This is the "Blake2F lesson" pattern — a silent wrong answer
-# masked by a trace. Fix: replace with a loud panic!, or make the 8-word state
-# length-indexed so the branch is provably dead, then delete this entry.
-Elevm/Hash.lean | _ => (dbg_trace "incorrect number of 32-bit numbers in hash"; 0)
-
 # Not a live `sorry`: a commented-out proof sketch inside a disabled lemma body
 # (the Adr'/toNat block in Types.lean), retained as a development note.
 Elevm/Types.lean -- sorry
